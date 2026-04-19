@@ -17,7 +17,6 @@ CATEGORY_ORDER = [
     "filesystem",
     "os_logs",
     "shell_history",
-    "browser_history",
     "network_artifacts",
     "app_artifacts",
     "memory_artifacts",

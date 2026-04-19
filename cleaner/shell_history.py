@@ -4,7 +4,6 @@ import codecs
 import sqlite3
 import subprocess
 import platform
-import time
 from .base import BaseCleaner, StatusReporter
 
 CAT = "shell_history"
@@ -260,25 +259,9 @@ def _ps_history(paths: list, reporter: StatusReporter) -> None:
 def _thumbcache(reporter: StatusReporter) -> None:
     artifact = "Thumbnail cache"
     reporter.running(CAT, artifact)
-    thumb_dir = os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Windows\Explorer")
-    if not os.path.isdir(thumb_dir):
-        reporter.skip(CAT, artifact, "Explorer cache dir not found")
-        return
-    _run(["taskkill", "/F", "/IM", "explorer.exe"])
-    time.sleep(1)
-    deleted = 0
-    errors = []
-    for db in glob.glob(os.path.join(thumb_dir, "thumbcache_*.db")):
-        try:
-            os.remove(db)
-            deleted += 1
-        except Exception as e:
-            errors.append(str(e))
-    subprocess.Popen(["explorer.exe"])
-    if errors:
-        reporter.warn(CAT, artifact, f"Deleted {deleted}, failed: {'; '.join(errors)}")
-    else:
-        reporter.ok(CAT, artifact, f"Deleted {deleted} cache file(s); Explorer restarted")
+    # Thumbnail DBs are monolithic blobs — surgical removal without killing Explorer
+    # is not possible. Skipping to avoid system disruption on a live desktop.
+    reporter.skip(CAT, artifact, "Skipped: safe surgical removal requires Explorer restart; run manually if needed")
 
 
 def _search_index(reporter: StatusReporter) -> None:
@@ -369,15 +352,43 @@ def _notification_db(paths: list, reporter: StatusReporter) -> None:
         reporter.warn(CAT, artifact, f"DB may be locked: {e}")
 
 
-def _bits(reporter: StatusReporter) -> None:
+def _bits(paths: list, reporter: StatusReporter) -> None:
     artifact = "BITS job history"
     reporter.running(CAT, artifact)
-    rc, _, err = _run(["bitsadmin", "/reset", "/allusers"])
-    if rc == 0:
-        reporter.ok(CAT, artifact)
+    basenames_lower = {os.path.basename(p).lower() for p in paths}
+    path_set_lower = {p.lower() for p in paths}
+    # Enumerate BITS jobs via PowerShell and cancel only those referencing target paths
+    ps_cmd = (
+        "Get-BitsTransfer -AllUsers 2>$null | "
+        "ForEach-Object { $j=$_; $j.FileList | ForEach-Object { "
+        "  [PSCustomObject]@{Id=$j.JobId;Remote=$_.RemoteName;Local=$_.LocalName} "
+        "}} | ConvertTo-Json -Depth 2"
+    )
+    rc, out, _ = _run(["powershell", "-NoProfile", "-Command", ps_cmd], timeout=20)
+    cancelled = 0
+    if rc == 0 and out.strip():
+        import json as _json
+        try:
+            jobs = _json.loads(out)
+            if isinstance(jobs, dict):
+                jobs = [jobs]
+            seen_ids = set()
+            for entry in jobs:
+                local = str(entry.get("Local", "")).lower()
+                remote = str(entry.get("Remote", "")).lower()
+                combined = local + remote
+                if any(b in combined for b in basenames_lower) or any(p in combined for p in path_set_lower):
+                    job_id = str(entry.get("Id", ""))
+                    if job_id and job_id not in seen_ids:
+                        seen_ids.add(job_id)
+                        _run(["bitsadmin", "/cancel", job_id])
+                        cancelled += 1
+        except Exception:
+            pass
+    if cancelled:
+        reporter.ok(CAT, artifact, f"Cancelled {cancelled} BITS job(s) referencing target path(s)")
     else:
-        _run(["bitsadmin", "/reset"])
-        reporter.ok(CAT, artifact, "Reset current user BITS jobs")
+        reporter.skip(CAT, artifact, "No BITS jobs referencing target path(s) found")
 
 
 def _activity_history(reporter: StatusReporter) -> None:
@@ -430,5 +441,5 @@ class ShellHistoryCleaner(BaseCleaner):
         _search_index(reporter)
         _recycle_bin(paths, reporter)
         _notification_db(paths, reporter)
-        _bits(reporter)
+        _bits(paths, reporter)
         _activity_history(reporter)

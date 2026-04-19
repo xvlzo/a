@@ -79,46 +79,6 @@ def _network_registry(reporter: StatusReporter) -> None:
         reporter.skip(CAT, artifact, "winreg not available (non-Windows)")
 
 
-def _credential_manager(reporter: StatusReporter) -> None:
-    artifact = "Credential Manager"
-    reporter.running(CAT, artifact)
-    try:
-        rc, out, _ = _run(["cmdkey", "/list"])
-        if rc != 0 or not out:
-            reporter.skip(CAT, artifact, "No stored credentials")
-            return
-        deleted = 0
-        for line in out.splitlines():
-            line = line.strip()
-            if line.startswith("Target:"):
-                target = line.replace("Target:", "").strip()
-                r2, _, _ = _run(["cmdkey", f"/delete:{target}"])
-                if r2 == 0:
-                    deleted += 1
-        reporter.ok(CAT, artifact, f"Deleted {deleted} credential(s)")
-    except Exception as e:
-        reporter.warn(CAT, artifact, str(e))
-
-
-def _ntlm_cache(reporter: StatusReporter) -> None:
-    artifact = "NTLM logon cache"
-    reporter.running(CAT, artifact)
-    try:
-        import winreg
-        key = winreg.OpenKey(
-            winreg.HKEY_LOCAL_MACHINE,
-            r"SYSTEM\CurrentControlSet\Control\Lsa",
-            access=winreg.KEY_ALL_ACCESS,
-        )
-        winreg.SetValueEx(key, "CachedLogonsCount", 0, winreg.REG_SZ, "0")
-        winreg.CloseKey(key)
-        reporter.ok(CAT, artifact, "CachedLogonsCount set to 0; takes effect on next logon")
-    except ImportError:
-        reporter.skip(CAT, artifact, "winreg not available (non-Windows)")
-    except Exception as e:
-        reporter.warn(CAT, artifact, str(e))
-
-
 def _smb_audit(reporter: StatusReporter) -> None:
     artifact = "SMB/File share audit policy"
     reporter.running(CAT, artifact)
@@ -144,12 +104,10 @@ class NetworkArtifactsCleaner(BaseCleaner):
     def run(self, paths: list, reporter: StatusReporter) -> None:
         if platform.system() != "Windows":
             for name in ["DNS cache", "Windows Firewall logs", "Network connection registry",
-                         "Credential Manager", "NTLM logon cache", "SMB/File share audit policy"]:
+                         "SMB/File share audit policy"]:
                 reporter.skip(CAT, name, "Windows only")
             return
         _dns_cache(reporter)
         _firewall_logs(reporter)
         _network_registry(reporter)
-        _credential_manager(reporter)
-        _ntlm_cache(reporter)
         _smb_audit(reporter)

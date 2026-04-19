@@ -75,16 +75,6 @@ def _logfile_cycle(paths: list, reporter: StatusReporter) -> None:
                     pass
 
 
-def _free_space_wipe(paths: list, reporter: StatusReporter) -> None:
-    drives = _drives_from_paths(paths)
-    for drive in drives:
-        letter = drive.rstrip("\\")
-        artifact = f"Free space wipe ({letter}) [cipher /w]"
-        reporter.running(CAT, artifact)
-        reporter.warn(CAT, artifact, "cipher /w running in background — this may take several minutes; other artifacts continue")
-        subprocess.Popen(["cipher", "/w:" + letter], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-
 def _dir_timestamps(paths: list, reporter: StatusReporter) -> None:
     artifact = "Parent directory timestamps"
     reporter.running(CAT, artifact)
@@ -117,11 +107,10 @@ class FilesystemCleaner(BaseCleaner):
 
     def run(self, paths: list, reporter: StatusReporter) -> None:
         if platform.system() != "Windows":
-            for name in ["USN Journal", "Volume Shadow Copies", "$LogFile cycle", "Free space wipe", "Parent directory timestamps"]:
+            for name in ["USN Journal", "Volume Shadow Copies", "$LogFile cycle", "Parent directory timestamps"]:
                 reporter.skip(CAT, name, "Windows only")
             return
         _usn_journal(paths, reporter)
         _vss(reporter)
         _logfile_cycle(paths, reporter)
-        _free_space_wipe(paths, reporter)
         _dir_timestamps(paths, reporter)

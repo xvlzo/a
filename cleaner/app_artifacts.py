@@ -340,12 +340,13 @@ def _temp_artifacts(paths: list, reporter: StatusReporter) -> None:
 
 def _etw_logs(reporter: StatusReporter) -> None:
     """Clear ETW kernel-file circular log buffers (WDI diagnostic logs)."""
-    artifact = "ETW kernel diagnostic logs (WDI)"
+    artifact = "ETW kernel diagnostic logs (WDI/PerfLogs)"
     reporter.running(CAT, artifact)
     etw_dirs = [
         r"C:\Windows\System32\WDI\LogFiles",
         r"C:\Windows\System32\LogFiles\WMI",
         r"C:\Windows\Logs\WMI",
+        r"C:\PerfLogs",
     ]
     deleted = 0
     for d in etw_dirs:
@@ -360,6 +361,66 @@ def _etw_logs(reporter: StatusReporter) -> None:
         reporter.ok(CAT, artifact, f"Deleted {deleted} ETW log file(s)")
     else:
         reporter.skip(CAT, artifact, "No ETW log files found")
+
+
+def _text_log_artifacts(paths: list, reporter: StatusReporter) -> None:
+    """
+    Scan Windows text-based log files for dropped path strings.
+    Process Hacker and similar tools can find path references in CBS.log,
+    DISM.log, debug logs, and AppX packaging logs even after the file is wiped.
+    Lines containing target path are stripped; files are not deleted wholesale.
+    """
+    artifact = "Dropped strings in system text logs"
+    reporter.running(CAT, artifact)
+    basenames_lower = {os.path.basename(p).lower() for p in paths}
+    path_set_lower = {p.lower() for p in paths}
+
+    def _matches_line(line: str) -> bool:
+        ll = line.lower()
+        return any(b in ll for b in basenames_lower) or any(p in ll for p in path_set_lower)
+
+    log_files = [
+        r"C:\Windows\Logs\CBS\CBS.log",
+        r"C:\Windows\Logs\DISM\dism.log",
+        r"C:\Windows\Logs\AppxPackaging\OLE.log",
+        r"C:\Windows\debug\NetSetup.LOG",
+        r"C:\Windows\debug\PASSWD.LOG",
+        r"C:\Windows\debug\wia\wiatrace.log",
+        os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Windows\WER\ERC\*.log"),
+    ]
+    # Also scan C:\Windows\debug\*.log and C:\Windows\Logs\AppxPackaging\*.log
+    for pattern in [
+        r"C:\Windows\debug\*.log",
+        r"C:\Windows\Logs\AppxPackaging\*.log",
+        r"C:\Windows\Logs\*.log",
+    ]:
+        for f in glob.glob(pattern):
+            if f not in log_files:
+                log_files.append(f)
+
+    cleaned = 0
+    for log_path in log_files:
+        # Handle glob patterns in the list
+        expanded = glob.glob(log_path) if "*" in log_path else [log_path]
+        for fpath in expanded:
+            if not os.path.isfile(fpath):
+                continue
+            try:
+                with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                    lines = f.readlines()
+                before = len(lines)
+                filtered = [l for l in lines if not _matches_line(l)]
+                if len(filtered) < before:
+                    with open(fpath, "w", encoding="utf-8") as f:
+                        f.writelines(filtered)
+                    cleaned += before - len(filtered)
+            except Exception:
+                pass
+
+    if cleaned:
+        reporter.ok(CAT, artifact, f"Stripped {cleaned} line(s) from system text logs")
+    else:
+        reporter.skip(CAT, artifact, "No path references found in system text logs")
 
 
 def _dangling_registry_refs(paths: list, reporter: StatusReporter) -> None:
@@ -427,8 +488,8 @@ class AppArtifactsCleaner(BaseCleaner):
                          "Archive tool history (7-Zip / WinRAR)", "Cortana / Windows Search cache",
                          "Windows Defender scan history", "Reliability Monitor history",
                          "SmartScreen telemetry", "Clipboard history", "GPU driver telemetry",
-                         "Temp extraction artifacts", "ETW kernel diagnostic logs (WDI)",
-                         "Dangling registry reference check"]:
+                         "Temp extraction artifacts", "ETW kernel diagnostic logs (WDI/PerfLogs)",
+                         "Dropped strings in system text logs", "Dangling registry reference check"]:
                 reporter.skip(CAT, name, "Windows only")
             return
         _office_mru(paths, reporter)
@@ -442,4 +503,5 @@ class AppArtifactsCleaner(BaseCleaner):
         _gpu_telemetry(reporter)
         _temp_artifacts(paths, reporter)
         _etw_logs(reporter)
+        _text_log_artifacts(paths, reporter)
         _dangling_registry_refs(paths, reporter)  # always last — verification pass

@@ -82,7 +82,7 @@
       <input type="checkbox" name="cat" value="filesystem" checked>
       <div>
         <div class="cat-label">Filesystem Traces</div>
-        <div class="cat-sub">USN journal &bull; VSS &bull; $LogFile &bull; cipher /w</div>
+        <div class="cat-sub">USN journal &bull; VSS &bull; $LogFile &bull; dir timestamps</div>
       </div>
     </label>
     <label class="cat-item">
@@ -100,17 +100,10 @@
       </div>
     </label>
     <label class="cat-item">
-      <input type="checkbox" name="cat" value="browser_history" checked>
-      <div>
-        <div class="cat-label">Browser History</div>
-        <div class="cat-sub">Chrome &bull; Edge &bull; Firefox download records</div>
-      </div>
-    </label>
-    <label class="cat-item">
       <input type="checkbox" name="cat" value="network_artifacts" checked>
       <div>
         <div class="cat-label">Network Artifacts</div>
-        <div class="cat-sub">DNS cache &bull; WLAN &bull; Firewall logs &bull; Credentials</div>
+        <div class="cat-sub">DNS cache &bull; Firewall logs &bull; SMB audit policy</div>
       </div>
     </label>
     <label class="cat-item">
@@ -124,25 +117,11 @@
       <input type="checkbox" name="cat" value="memory_artifacts" checked>
       <div>
         <div class="cat-label">Memory Artifacts</div>
-        <div class="cat-sub">hiberfil.sys &bull; pagefile &bull; crash dumps &bull; minidumps</div>
+        <div class="cat-sub">Crash dumps &bull; minidumps &bull; WER memory dumps</div>
       </div>
     </label>
   </div>
 
-  <div class="warn-checks" id="warnChecks">
-    <label class="warn-check">
-      <input type="checkbox" id="ackThumb">
-      <div class="wc-text">
-        <strong>Thumbnail cache</strong> &mdash; Windows Explorer will be killed and restarted (~2 sec desktop flash). I acknowledge this.
-      </div>
-    </label>
-    <label class="warn-check">
-      <input type="checkbox" id="ackHiber">
-      <div class="wc-text">
-        <strong>Hibernation disable</strong> &mdash; hiberfil.sys will be deleted and hibernate disabled (re-enable with <code>powercfg /hibernate on</code>). I acknowledge this.
-      </div>
-    </label>
-  </div>
 
   <div class="btn-row">
     <button id="eraseBtn">&#x25B6; ERASE ALL TRACES</button>
@@ -171,7 +150,6 @@ const CAT_LABELS = {
   filesystem: 'Filesystem Traces',
   os_logs: 'OS Activity Logs',
   shell_history: 'Shell & App History',
-  browser_history: 'Browser History',
   network_artifacts: 'Network Artifacts',
   app_artifacts: 'Application Artifacts',
   memory_artifacts: 'Memory Artifacts',
