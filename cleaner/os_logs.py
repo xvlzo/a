@@ -250,15 +250,63 @@ _CHECKED_LOGS = [
     "Application",
 ]
 
+# Physical .evtx paths — used for direct deletion to avoid 1102/104 artifacts
+_EVTX_PATHS = {
+    "Security":    r"C:\Windows\System32\winevt\Logs\Security.evtx",
+    "System":      r"C:\Windows\System32\winevt\Logs\System.evtx",
+    "Application": r"C:\Windows\System32\winevt\Logs\Application.evtx",
+    "Microsoft-Windows-PowerShell/Operational":
+        r"C:\Windows\System32\winevt\Logs\Microsoft-Windows-PowerShell%4Operational.evtx",
+    "Microsoft-Windows-Windows Defender/Operational":
+        r"C:\Windows\System32\winevt\Logs\Microsoft-Windows-Windows Defender%4Operational.evtx",
+    "Microsoft-Windows-SmartScreen/Debug":
+        r"C:\Windows\System32\winevt\Logs\Microsoft-Windows-SmartScreen%4Debug.evtx",
+}
+
+
+def _clear_log_no_1102(log_name: str) -> tuple:
+    """
+    Clear an event log WITHOUT generating Event 1102 (audit log cleared) or
+    Event 104 (system log cleared) — which screenshare tools look for immediately.
+
+    Strategy:
+      1. Stop the Windows Event Log service (stops new entries being written).
+      2. Delete the .evtx file directly.
+      3. Restart the service (Windows recreates an empty log automatically).
+
+    wevtutil cl always writes 1102/104, so we never use it for Security/System.
+    """
+    evtx = _EVTX_PATHS.get(log_name)
+    if not evtx or not os.path.exists(evtx):
+        # Fall back to wevtutil for logs we don't have a path for
+        r = subprocess.run(["wevtutil", "cl", log_name],
+                           capture_output=True, text=True, timeout=30)
+        return r.returncode, r.stderr.strip()
+
+    # Stop event log service
+    subprocess.run(["sc", "stop", "EventLog"], capture_output=True, timeout=15)
+    time.sleep(1)
+    try:
+        os.remove(evtx)
+        rc, err = 0, ""
+    except Exception as e:
+        rc, err = 1, str(e)
+    finally:
+        subprocess.run(["sc", "start", "EventLog"], capture_output=True, timeout=15)
+        time.sleep(1)
+    return rc, err
+
 
 def _event_logs(paths: list, reporter: StatusReporter) -> None:
     """
-    Targeted event log clearing:
-    - 'Always clear' logs (PS, Defender, SmartScreen) are cleared unconditionally
-      since they may contain traces of our own cleaning activity.
-    - Audit logs (Security, System, Application) are scanned first; only cleared
+    Targeted event log clearing that avoids Event 1102/104 artifacts.
+    Uses direct .evtx deletion (via EventLog service stop/start) instead of
+    wevtutil cl — screenshare tools like StormSS and Red Lotus check for 1102/104
+    as an immediate indicator of evidence tampering.
+
+    - Always-clear logs (PS, Defender, SmartScreen): cleared unconditionally.
+    - Audit logs (Security, System, Application): scanned first; only cleared
       if they contain a reference to one of the target file basenames.
-      Preserving clean logs looks less suspicious than nuking everything.
     """
     basenames = [os.path.basename(p) for p in paths]
 
@@ -266,9 +314,9 @@ def _event_logs(paths: list, reporter: StatusReporter) -> None:
     for log in sorted(_ALWAYS_CLEAR):
         artifact = f"Event Log: {log}"
         reporter.running(CAT, artifact)
-        rc, _, err = _run(["wevtutil", "cl", log])
+        rc, err = _clear_log_no_1102(log)
         if rc == 0:
-            reporter.ok(CAT, artifact)
+            reporter.ok(CAT, artifact, "Cleared (no 1102/104)")
         else:
             reporter.warn(CAT, artifact, err or "Log not found or requires elevation")
 
@@ -280,9 +328,9 @@ def _event_logs(paths: list, reporter: StatusReporter) -> None:
         if not has_hit:
             reporter.skip(CAT, artifact, "No references to target found — log preserved")
             continue
-        rc, _, err = _run(["wevtutil", "cl", log])
+        rc, err = _clear_log_no_1102(log)
         if rc == 0:
-            reporter.ok(CAT, artifact, "References found and log cleared")
+            reporter.ok(CAT, artifact, "References found and log cleared (no 1102/104)")
         else:
             reporter.warn(CAT, artifact, err or "Requires elevation")
 

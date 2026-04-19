@@ -230,6 +230,194 @@ def _smartscreen_telemetry(reporter: StatusReporter) -> None:
     reporter.ok(CAT, artifact, f"Event log cleared; {deleted} local SmartScreen file(s) removed")
 
 
+def _clipboard_history(reporter: StatusReporter) -> None:
+    artifact = "Clipboard history"
+    reporter.running(CAT, artifact)
+    clip_dir = os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Windows\Clipboard")
+    deleted = 0
+    if os.path.isdir(clip_dir):
+        for root, dirs, files in os.walk(clip_dir):
+            for f in files:
+                try:
+                    os.remove(os.path.join(root, f))
+                    deleted += 1
+                except Exception:
+                    pass
+    # Disable clipboard history via registry
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                             r"SOFTWARE\Policies\Microsoft\Windows\System",
+                             access=winreg.KEY_ALL_ACCESS)
+        winreg.SetValueEx(key, "AllowClipboardHistory", 0, winreg.REG_DWORD, 0)
+        winreg.CloseKey(key)
+    except Exception:
+        pass
+    reporter.ok(CAT, artifact, f"Deleted {deleted} clipboard item(s); history disabled via policy")
+
+
+def _gpu_telemetry(reporter: StatusReporter) -> None:
+    artifact = "GPU driver telemetry"
+    reporter.running(CAT, artifact)
+    deleted = 0
+    paths_to_clear = [
+        # NVIDIA
+        os.path.expandvars(r"%LOCALAPPDATA%\NVIDIA\NvBackend\ApplicationOntology"),
+        os.path.expandvars(r"%PROGRAMDATA%\NVIDIA Corporation\Downloader"),
+        r"C:\ProgramData\NVIDIA Corporation\NvTelemetry",
+        # AMD
+        os.path.expandvars(r"%LOCALAPPDATA%\AMD\CN"),
+        r"C:\ProgramData\AMD\CN",
+        # Intel
+        os.path.expandvars(r"%LOCALAPPDATA%\Intel\ShaderCache"),
+    ]
+    for d in paths_to_clear:
+        if os.path.isdir(d):
+            for f in glob.glob(os.path.join(d, "**", "*.log"), recursive=True):
+                try:
+                    os.remove(f)
+                    deleted += 1
+                except Exception:
+                    pass
+            for f in glob.glob(os.path.join(d, "**", "*.db"), recursive=True):
+                try:
+                    os.remove(f)
+                    deleted += 1
+                except Exception:
+                    pass
+
+    # NVIDIA telemetry registry — disable future logging
+    try:
+        import winreg
+        for nv_key in [r"SOFTWARE\NVIDIA Corporation\NvTelemetry",
+                       r"SYSTEM\CurrentControlSet\Services\NvTelemetryContainer"]:
+            try:
+                key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, nv_key,
+                                     access=winreg.KEY_ALL_ACCESS)
+                winreg.SetValueEx(key, "EnableTelemetry", 0, winreg.REG_DWORD, 0)
+                winreg.CloseKey(key)
+            except Exception:
+                pass
+    except ImportError:
+        pass
+
+    if deleted:
+        reporter.ok(CAT, artifact, f"Deleted {deleted} GPU telemetry file(s)")
+    else:
+        reporter.skip(CAT, artifact, "No GPU telemetry files found")
+
+
+def _temp_artifacts(paths: list, reporter: StatusReporter) -> None:
+    """Clear %TEMP% and %TMP% entries that could be extraction artifacts."""
+    artifact = "Temp extraction artifacts"
+    reporter.running(CAT, artifact)
+    basenames_lower = {os.path.basename(p).lower() for p in paths}
+    stems = {os.path.splitext(b)[0] for b in basenames_lower}
+    temp_dirs = list({os.path.expandvars("%TEMP%"), os.path.expandvars("%TMP%"),
+                      r"C:\Windows\Temp"})
+    deleted = 0
+    for d in temp_dirs:
+        if not os.path.isdir(d):
+            continue
+        for entry in os.listdir(d):
+            el = entry.lower()
+            if any(b in el for b in basenames_lower) or any(s in el for s in stems):
+                fpath = os.path.join(d, entry)
+                try:
+                    if os.path.isfile(fpath):
+                        os.remove(fpath)
+                    elif os.path.isdir(fpath):
+                        import shutil
+                        shutil.rmtree(fpath, ignore_errors=True)
+                    deleted += 1
+                except Exception:
+                    pass
+    if deleted:
+        reporter.ok(CAT, artifact, f"Removed {deleted} temp item(s)")
+    else:
+        reporter.skip(CAT, artifact, "No matching temp artifacts found")
+
+
+def _etw_logs(reporter: StatusReporter) -> None:
+    """Clear ETW kernel-file circular log buffers (WDI diagnostic logs)."""
+    artifact = "ETW kernel diagnostic logs (WDI)"
+    reporter.running(CAT, artifact)
+    etw_dirs = [
+        r"C:\Windows\System32\WDI\LogFiles",
+        r"C:\Windows\System32\LogFiles\WMI",
+        r"C:\Windows\Logs\WMI",
+    ]
+    deleted = 0
+    for d in etw_dirs:
+        if os.path.isdir(d):
+            for f in glob.glob(os.path.join(d, "**", "*.etl"), recursive=True):
+                try:
+                    os.remove(f)
+                    deleted += 1
+                except Exception:
+                    pass
+    if deleted:
+        reporter.ok(CAT, artifact, f"Deleted {deleted} ETW log file(s)")
+    else:
+        reporter.skip(CAT, artifact, "No ETW log files found")
+
+
+def _dangling_registry_refs(paths: list, reporter: StatusReporter) -> None:
+    """
+    Verify no registry artifacts point to our (now-deleted) files.
+    Dangling references (registry entry for a non-existent file) are a major
+    screenshare red flag — Red Lotus and StormSS check for these explicitly.
+    """
+    artifact = "Dangling registry reference check"
+    reporter.running(CAT, artifact)
+    try:
+        import winreg
+        basenames_lower = {os.path.basename(p).lower() for p in paths}
+        path_set_lower = {p.lower() for p in paths}
+        dangling = []
+
+        keys_to_check = [
+            (winreg.HKEY_CURRENT_USER,
+             r"Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist"),
+            (winreg.HKEY_CURRENT_USER,
+             r"Software\Microsoft\Windows\CurrentVersion\Explorer\RecentDocs"),
+            (winreg.HKEY_CURRENT_USER,
+             r"Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\MuiCache"),
+            (winreg.HKEY_LOCAL_MACHINE,
+             r"SYSTEM\CurrentControlSet\Services\bam\State\UserSettings"),
+        ]
+
+        def _scan_key_for_refs(hive, path):
+            try:
+                key = winreg.OpenKey(hive, path, access=winreg.KEY_READ)
+                i = 0
+                while True:
+                    try:
+                        name, data, _ = winreg.EnumValue(key, i)
+                        val = (name + str(data)).lower()
+                        if any(b in val for b in basenames_lower) or any(p in val for p in path_set_lower):
+                            dangling.append(f"{path}\\{name}")
+                        i += 1
+                    except OSError:
+                        break
+                winreg.CloseKey(key)
+            except Exception:
+                pass
+
+        for hive, path in keys_to_check:
+            _scan_key_for_refs(hive, path)
+
+        if dangling:
+            reporter.warn(CAT, artifact,
+                          f"ALERT: {len(dangling)} dangling reference(s) still found — "
+                          f"re-run shell_history and os_logs categories. Keys: "
+                          + "; ".join(dangling[:5]))
+        else:
+            reporter.ok(CAT, artifact, "No dangling registry references found")
+    except ImportError:
+        reporter.skip(CAT, artifact, "winreg not available (non-Windows)")
+
+
 class AppArtifactsCleaner(BaseCleaner):
     CATEGORY = CAT
 
@@ -238,7 +426,9 @@ class AppArtifactsCleaner(BaseCleaner):
             for name in ["Microsoft Office MRU", "File extension handlers (OpenWithList)",
                          "Archive tool history (7-Zip / WinRAR)", "Cortana / Windows Search cache",
                          "Windows Defender scan history", "Reliability Monitor history",
-                         "SmartScreen telemetry"]:
+                         "SmartScreen telemetry", "Clipboard history", "GPU driver telemetry",
+                         "Temp extraction artifacts", "ETW kernel diagnostic logs (WDI)",
+                         "Dangling registry reference check"]:
                 reporter.skip(CAT, name, "Windows only")
             return
         _office_mru(paths, reporter)
@@ -248,3 +438,8 @@ class AppArtifactsCleaner(BaseCleaner):
         _defender_history(paths, reporter)
         _reliability_monitor(reporter)
         _smartscreen_telemetry(reporter)
+        _clipboard_history(reporter)
+        _gpu_telemetry(reporter)
+        _temp_artifacts(paths, reporter)
+        _etw_logs(reporter)
+        _dangling_registry_refs(paths, reporter)  # always last — verification pass
