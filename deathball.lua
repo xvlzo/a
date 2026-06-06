@@ -488,7 +488,9 @@ task.spawn(function()
 
                 Stats.Parries      += 1
                 consecutiveParries += 1
-                resetBallHistory()
+                -- Do NOT reset history here — the direction-reversal detector in
+                -- pushBallHistory handles this naturally when the ball bounces back.
+                -- Resetting here caused TTI = huge after the first parry if ball.Velocity = 0.
             end
 
             local delay = humanDelay()
