@@ -620,21 +620,23 @@ StealthTab:CreateToggle({
 
 StealthTab:CreateSection("Timing Humanization")
 
+-- Note: CurrentValue mirrors the session-fingerprinted value so the slider
+-- display matches reality and any on-init callback doesn't override it.
 StealthTab:CreateSlider({
     Name = "Timing Jitter", Range = { 0, 60 }, Increment = 1,
-    Suffix = " ms", CurrentValue = 22, Flag = "StealthJitter",
+    Suffix = " ms", CurrentValue = Stealth.JitterMs, Flag = "StealthJitter",
     Callback = function(v) Stealth.JitterMs = v end,
 })
 
 StealthTab:CreateSlider({
     Name = "Min Reaction Time", Range = { 50, 200 }, Increment = 5,
-    Suffix = " ms", CurrentValue = 85, Flag = "StealthMinReact",
+    Suffix = " ms", CurrentValue = Stealth.MinReactionMs, Flag = "StealthMinReact",
     Callback = function(v) Stealth.MinReactionMs = v end,
 })
 
 StealthTab:CreateSlider({
     Name = "Cooldown Noise", Range = { 0, 150 }, Increment = 5,
-    Suffix = " ms", CurrentValue = 55, Flag = "StealthCDNoise",
+    Suffix = " ms", CurrentValue = Stealth.CooldownNoise, Flag = "StealthCDNoise",
     Callback = function(v) Stealth.CooldownNoise = v end,
 })
 
@@ -642,13 +644,14 @@ StealthTab:CreateSection("Miss Pattern")
 
 StealthTab:CreateSlider({
     Name = "Miss Chance", Range = { 0, 20 }, Increment = 1,
-    Suffix = " %", CurrentValue = 5, Flag = "StealthMiss",
+    Suffix = " %", CurrentValue = math.floor(Stealth.MissChance * 100 + 0.5),
+    Flag = "StealthMiss",
     Callback = function(v) Stealth.MissChance = v / 100 end,
 })
 
 StealthTab:CreateSlider({
     Name = "Max Consecutive Parries", Range = { 5, 35 }, Increment = 1,
-    Suffix = "", CurrentValue = 14, Flag = "StealthMaxStreak",
+    Suffix = "", CurrentValue = Stealth.MaxConsecutive, Flag = "StealthMaxStreak",
     Callback = function(v) Stealth.MaxConsecutive = v end,
 })
 
@@ -656,7 +659,7 @@ StealthTab:CreateSection("Curve Variation")
 
 StealthTab:CreateSlider({
     Name = "Curve Angle Noise", Range = { 0, 15 }, Increment = 1,
-    Suffix = " °", CurrentValue = 5, Flag = "StealthCurveNoise",
+    Suffix = " °", CurrentValue = Stealth.CurveNoiseDeg, Flag = "StealthCurveNoise",
     Callback = function(v) Stealth.CurveNoiseDeg = v end,
 })
 
