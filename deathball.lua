@@ -89,67 +89,49 @@ local ballHistory    = {}
 local lastBallPos    = nil
 local lastBounceTime = 0    -- tick() of last direction-reversal reset; used for post-bounce jitter
 
--- ── Ball cache ────────────────────────────────────────────────────────────────
+-- ── Ball tracking ────────────────────────────────────────────────────────────
+-- Architecture: maintain a SINGLE tracked ball reference rather than iterating
+-- a set every Heartbeat. updateTrackedBall() runs every 0.5s (slow tick) and
+-- picks the best candidate; getRealBall() is then a trivial O(1) read.
 
-local cachedBalls = {}
+local namedBalls  = {}    -- parts whose name contains "ball" (small set, fast lookup)
+local trackedBall = nil   -- the one part the parry loop actually uses
+
+local function isCharacterPart(obj)
+    local p = obj.Parent
+    if not p then return false end
+    if p:FindFirstChildOfClass("Humanoid") then return true end
+    local gp = p.Parent
+    return gp ~= nil and gp:FindFirstChildOfClass("Humanoid") ~= nil
+end
+
+local function isFakeBall(part)
+    if part.Transparency >= 0.9          then return true end
+    if part:GetAttribute("Fake")         then return true end
+    if part.Name:lower():find("fake")    then return true end
+    if part:FindFirstChild("FakeTag")    then return true end
+    return false
+end
 
 local function onDescendantAdded(obj)
     if obj:IsA("BasePart") and obj.Name:lower():find("ball") then
-        cachedBalls[obj] = true
+        namedBalls[obj] = true
     end
 end
-
 local function onDescendantRemoving(obj)
-    cachedBalls[obj] = nil
+    namedBalls[obj] = nil
+    if trackedBall == obj then trackedBall = nil end
 end
-
 workspace.DescendantAdded:Connect(onDescendantAdded)
 workspace.DescendantRemoving:Connect(onDescendantRemoving)
-
 for _, obj in ipairs(workspace:GetDescendants()) do onDescendantAdded(obj) end
 
--- Fallback scanner: if name-based detection finds nothing, broaden to any
--- non-anchored, non-character, ball-sized BasePart in workspace.
--- Runs every 1s so it doesn't burn frame time, and stops once a ball is found.
-task.spawn(function()
-    while true do
-        task.wait(1)
-        if getRealBall() then continue end
-        for _, obj in ipairs(workspace:GetDescendants()) do
-            if not obj:IsA("BasePart") or obj.Anchored then continue end
-            -- Skip player character parts (Humanoid within 2 levels up)
-            local p = obj.Parent
-            if p then
-                if p:FindFirstChildOfClass("Humanoid") then continue end
-                local gp = p.Parent
-                if gp and gp:FindFirstChildOfClass("Humanoid") then continue end
-            end
-            local s   = obj.Size
-            local mn  = math.min(s.X, s.Y, s.Z)
-            local mx  = math.max(s.X, s.Y, s.Z)
-            -- Roughly ball-sized: 0.3–20 studs, not wildly non-spherical
-            if mn >= 0.3 and mx <= 20 and (mx / mn) < 2.5 then
-                cachedBalls[obj] = true
-            end
-        end
-    end
-end)
-
-local function isRealBall(part)
-    if not part.Parent                then return false end
-    if part.Transparency >= 0.9       then return false end  -- only reject fully-invisible parts
-    if part:GetAttribute("Fake")      then return false end
-    if part.Name:lower():find("fake") then return false end
-    if part:FindFirstChild("FakeTag") then return false end
-    return true
-end
-
-local function getRealBall()
+-- Picks and caches the best ball candidate.  Called every 0.5s by background task.
+local function updateTrackedBall()
+    -- Pass 1: prefer parts whose name contains "ball"
     local best, bestScore = nil, -1
-    for part in pairs(cachedBalls) do
-        if isRealBall(part) then
-            -- Primary signal: prefer the ball we're already tracking in history
-            -- (continuity beats size — Gazo's fake appears at a different location)
+    for part in pairs(namedBalls) do
+        if part.Parent and not isFakeBall(part) then
             local score = part.Size.Magnitude
             if lastBallPos and (part.Position - lastBallPos).Magnitude < 12 then
                 score = score + 100
@@ -157,7 +139,31 @@ local function getRealBall()
             if score > bestScore then best, bestScore = part, score end
         end
     end
-    return best
+    if best then trackedBall = best; return end
+
+    -- Pass 2: fallback — scan workspace once for the closest unanchored,
+    -- non-character, ball-sized BasePart.  Only reached when name cache is empty.
+    local hrp, bestDist = getRootPart(), math.huge
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if not obj:IsA("BasePart") or obj.Anchored then continue end
+        if isFakeBall(obj) or isCharacterPart(obj) then continue end
+        local s  = obj.Size
+        local mn = math.min(s.X, s.Y, s.Z)
+        local mx = math.max(s.X, s.Y, s.Z)
+        if mn < 0.3 or mx > 20 or (mx / mn) > 2.5 then continue end
+        local dist = hrp and (obj.Position - hrp.Position).Magnitude or 0
+        if dist < bestDist then bestDist = dist; best = obj end
+    end
+    trackedBall = best
+end
+
+task.spawn(function()
+    while true do task.wait(0.5); pcall(updateTrackedBall) end
+end)
+
+local function getRealBall()
+    if trackedBall and not trackedBall.Parent then trackedBall = nil end
+    return trackedBall
 end
 
 -- ── Prediction engine ─────────────────────────────────────────────────────────
