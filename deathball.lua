@@ -202,13 +202,14 @@ local function gaussMs(maxMs)
     return (math.random(0, maxMs) + math.random(0, maxMs)) / 2 / 1000
 end
 
-local consecutiveParries = 0
-local postMissBump       = 0     -- extra miss chance for next N parries after a miss
-local roundPerformance   = 1.0   -- per-round multiplier on miss chance (0.7–1.3)
-local roundTTIOffsetMs   = 0     -- per-round TTI trigger offset (–8 to +8 ms) for histogram variance
-local perParryStartupMs  = 0     -- per-parry startup offset, resampled each fire
-local spawnTime          = 0     -- tick() at last respawn, used for warm-up window
-local lastAbilityTime    = 0     -- prevents double-firing ability on successive frames
+local consecutiveParries  = 0
+local postMissBump        = 0     -- extra miss chance for next N parries after a miss
+local roundPerformance    = 1.0   -- per-round multiplier on miss chance (0.7–1.3)
+local roundTTIOffsetMs    = 0     -- per-round TTI trigger offset (–8 to +8 ms) for histogram variance
+local perParryStartupMs   = 0     -- per-parry startup offset, resampled each fire
+local spawnTime           = 0     -- tick() at last respawn, used for warm-up window
+local lastAbilityTime     = 0     -- prevents double-firing ability on successive frames
+local attentionLapseUntil = 0     -- tick() until which the script ignores the ball (distraction sim)
 
 -- Per-parry startup offset: resampled each time we fire, ±15ms.
 -- Defined here (before its call at the end of this block) so the local is in scope.
@@ -315,18 +316,26 @@ end
 
 -- ── Input ─────────────────────────────────────────────────────────────────────
 
+-- Check once at load whether the executor actually exports mouse functions.
+-- We only test the type — calling them at load would inject a spurious click.
+-- If they're present but silently no-op at runtime, pressParry disables the
+-- mouse path mid-session so we don't silently skip parries.
+local mouseInputAvailable = type(mouse1press) == "function"
+                         and type(mouse1release) == "function"
+
 -- Randomly alternate between F key and LMB so neither input method dominates.
--- Falls back to F key if mouse1press/mouse1release are unavailable on this executor.
+-- Falls back to F key if mouse functions are absent or error at runtime.
 local function pressParry(hold)
     hold = hold or 0.05
-    local useMouse = Stealth.Enabled and math.random() < Stealth.MouseRatio
+    local useMouse = mouseInputAvailable and Stealth.Enabled and math.random() < Stealth.MouseRatio
     if useMouse then
         local ok = pcall(function()
             mouse1press()
             task.delay(hold, function() pcall(mouse1release) end)
         end)
         if ok then return end
-        -- mouse functions unavailable — fall through to F key
+        -- Runtime failure — disable mouse path for the remainder of this session
+        mouseInputAvailable = false
     end
     pcall(function()
         keypress(0x46)
@@ -423,6 +432,16 @@ task.spawn(function()
         -- Gate: physically impossible reaction time
         if tooFastForHuman(tti) then continue end
 
+        -- Occasionally simulate a brief "looking away" moment (~once every 3–4 min).
+        -- Only starts a lapse when the ball is safely far (TTI > 1s) so it never
+        -- causes a hit; humans stop a lapse the instant the ball is close.
+        if Stealth.Enabled then
+            if tti > 1.0 and math.random() < 0.00008 then
+                attentionLapseUntil = tick() + 0.15 + math.random() * 0.45  -- 150–600ms
+            end
+            if tick() < attentionLapseUntil then continue end
+        end
+
         if tti <= parryStartup then
             -- Intentional miss — happens BEFORE marking cooldown so ball actually hits
             if shouldMiss() then
@@ -510,11 +529,12 @@ LocalPlayer.CharacterAdded:Connect(function(char)
     char:WaitForChild("Humanoid")
     local t             = tick()
     Stats.LastParryTime = 0
-    lastAbilityTime     = 0
-    consecutiveParries  = 0
-    postMissBump        = 0
-    lastBounceTime      = 0
-    spawnTime           = t
+    lastAbilityTime      = 0
+    consecutiveParries   = 0
+    postMissBump         = 0
+    lastBounceTime       = 0
+    attentionLapseUntil  = 0
+    spawnTime            = t
     resetBallHistory()
     resampleRoundPerformance()
     resamplePerParryStartup()
