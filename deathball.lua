@@ -5,18 +5,35 @@ local RunService = game:GetService("RunService")
 
 local LocalPlayer = Players.LocalPlayer
 
+-- ── Feature settings ──────────────────────────────────────────────────────────
+
 local Settings = {
     AutoParry       = false,
     AbilityFailsafe = false,
     BallCurve       = false,
     AutoReady       = false,
     CurveAngle      = 180,
-    ParryStartup    = 0.13,   -- fire parry this many seconds before predicted impact
+    ParryStartup    = 0.13,
     ParryCooldown   = 0.8,
+}
+
+-- ── Anti-detection settings ───────────────────────────────────────────────────
+-- Every value here makes the parry pattern look less machine-generated.
+
+local Stealth = {
+    Enabled        = true,
+    JitterMs       = 22,    -- add 0–2×JitterMs ms random delay after trigger fires
+    MissChance     = 0.05,  -- 0–1 probability to intentionally skip a parry
+    MinReactionMs  = 85,    -- never fire when TTI < this (no human reacts faster)
+    MaxConsecutive = 14,    -- force a miss after this many parries in a row
+    HoldVariance   = true,  -- randomize key hold duration
+    CooldownNoise  = 55,    -- ±ms of noise added to cooldown gate each check
+    CurveNoiseDeg  = 5,     -- ±degrees of random offset on ball curve angle
 }
 
 local Stats = {
     Parries       = 0,
+    Misses        = 0,
     AbilitiesUsed = 0,
     FPS           = 0,
     LastParryTime = 0,
@@ -25,18 +42,14 @@ local Stats = {
 
 -- ── Character helpers ─────────────────────────────────────────────────────────
 
-local function getCharacter()
-    return LocalPlayer.Character
-end
-
 local function getRootPart()
-    local char = getCharacter()
+    local char = LocalPlayer.Character
     return char and char:FindFirstChild("HumanoidRootPart")
 end
 
--- ── Ball cache (avoid scanning workspace every frame) ─────────────────────────
+-- ── Ball cache ────────────────────────────────────────────────────────────────
 
-local BALL_NAMES = { ball = true, deathball = true, football = true, soccerball = true }
+local BALL_NAMES  = { ball = true, deathball = true, football = true, soccerball = true }
 local cachedBalls = {}
 
 local function onDescendantAdded(obj)
@@ -52,38 +65,29 @@ end
 workspace.DescendantAdded:Connect(onDescendantAdded)
 workspace.DescendantRemoving:Connect(onDescendantRemoving)
 
--- initial populate
-for _, obj in ipairs(workspace:GetDescendants()) do
-    onDescendantAdded(obj)
-end
+for _, obj in ipairs(workspace:GetDescendants()) do onDescendantAdded(obj) end
 
--- Fake ball detection: Gazo's Fake Ball is typically transparent, flagged,
--- or smaller than the real ball.
 local function isRealBall(part)
-    if not part.Parent               then return false end
-    if part.Transparency >= 0.5      then return false end
-    if part:GetAttribute("Fake")     then return false end
+    if not part.Parent                then return false end
+    if part.Transparency >= 0.5       then return false end
+    if part:GetAttribute("Fake")      then return false end
     if part.Name:lower():find("fake") then return false end
     if part:FindFirstChild("FakeTag") then return false end
     return true
 end
 
 local function getRealBall()
-    local best, bestSize = nil, -1
+    local best, bestSz = nil, -1
     for part in pairs(cachedBalls) do
         if isRealBall(part) then
             local sz = part.Size.Magnitude
-            if sz > bestSize then
-                best, bestSize = part, sz
-            end
+            if sz > bestSz then best, bestSz = part, sz end
         end
     end
     return best
 end
 
 -- ── Prediction engine ─────────────────────────────────────────────────────────
--- ball.Velocity replicates with network jitter; we track real positions and
--- compute a recency-weighted average velocity for stable prediction.
 
 local HISTORY_SIZE = 8
 local ballHistory  = {}
@@ -95,112 +99,148 @@ local function resetBallHistory()
 end
 
 local function pushBallHistory(ball)
-    -- reset history on large position jumps (ball re-served / teleported)
     if lastBallPos and (ball.Position - lastBallPos).Magnitude > 60 then
         resetBallHistory()
     end
     lastBallPos = ball.Position
-
     table.insert(ballHistory, { pos = ball.Position, t = tick() })
-    if #ballHistory > HISTORY_SIZE then
-        table.remove(ballHistory, 1)
-    end
+    if #ballHistory > HISTORY_SIZE then table.remove(ballHistory, 1) end
 end
 
 local function getSmoothedVelocity(ball)
     if #ballHistory < 2 then return ball.Velocity end
-
-    local weightedVel = Vector3.zero
-    local totalWeight = 0.0
-
+    local wVel, wTotal = Vector3.zero, 0.0
     for i = 2, #ballHistory do
-        local prev = ballHistory[i - 1]
-        local curr = ballHistory[i]
-        local dt   = curr.t - prev.t
+        local prev, curr = ballHistory[i-1], ballHistory[i]
+        local dt = curr.t - prev.t
         if dt >= 0.001 then
-            local frameVel = (curr.pos - prev.pos) / dt
-            local w = i   -- newer frames get higher index = higher weight
-            weightedVel = weightedVel + frameVel * w
-            totalWeight = totalWeight + w
+            local w = i
+            wVel   = wVel   + (curr.pos - prev.pos) / dt * w
+            wTotal = wTotal + w
         end
     end
-
-    return totalWeight > 0 and (weightedVel / totalWeight) or ball.Velocity
+    return wTotal > 0 and (wVel / wTotal) or ball.Velocity
 end
 
--- Returns seconds until ball surface reaches player hitbox surface.
--- Returns math.huge when the ball is not closing in on the player.
 local function predictTTI(ball, hrp)
     local vel   = getSmoothedVelocity(ball)
     local toHRP = hrp.Position - ball.Position
     local dist  = toHRP.Magnitude
-
     if dist < 0.01 then return 0 end
 
-    -- Use the narrowest cross-section for a tighter (more accurate) radius.
-    -- Size.Magnitude would be the diagonal (~1.73x too large).
     local ballRadius   = math.min(ball.Size.X, ball.Size.Y, ball.Size.Z) * 0.5
-    local playerRadius = math.min(hrp.Size.X,  hrp.Size.Y,  hrp.Size.Z) * 0.5
-    local effectiveDist = math.max(0, dist - ballRadius - playerRadius)
+    local playerRadius = math.min(hrp.Size.X,  hrp.Size.Y,  hrp.Size.Z)  * 0.5
+    local effDist      = math.max(0, dist - ballRadius - playerRadius)
 
-    local closingSpeed = vel:Dot(toHRP.Unit)
-    if closingSpeed <= 0 then return math.huge end   -- not closing in
+    local closing = vel:Dot(toHRP.Unit)
+    if closing <= 0 then return math.huge end
+    return effDist / closing
+end
 
-    return effectiveDist / closingSpeed
+-- ── Anti-detection helpers ────────────────────────────────────────────────────
+
+-- Two-sample average gives a mild bell-curve distribution
+local function gaussMs(maxMs)
+    return (math.random(0, maxMs) + math.random(0, maxMs)) / 2 / 1000
+end
+
+local consecutiveParries = 0
+
+local function shouldMiss()
+    if not Stealth.Enabled then return false end
+    if consecutiveParries >= Stealth.MaxConsecutive then
+        consecutiveParries = 0
+        return true   -- forced miss after long streak
+    end
+    if math.random() < Stealth.MissChance then
+        consecutiveParries = 0
+        return true
+    end
+    return false
+end
+
+-- Never fire faster than a human physically can react
+local function tooFastForHuman(tti)
+    return Stealth.Enabled and tti < (Stealth.MinReactionMs / 1000)
+end
+
+-- Random delay added after trigger condition is met
+local function humanDelay()
+    if not Stealth.Enabled or Stealth.JitterMs <= 0 then return 0 end
+    return gaussMs(Stealth.JitterMs * 2)
+end
+
+-- Variable key hold: 38–76ms instead of always 50ms
+local function holdDuration()
+    if not Stealth.Enabled or not Stealth.HoldVariance then return 0.05 end
+    return (38 + math.random(0, 38)) / 1000
+end
+
+-- Cooldown gate varies slightly each check so the rhythm isn't clockwork
+local function effectiveCooldown(base)
+    if not Stealth.Enabled or Stealth.CooldownNoise <= 0 then return base end
+    local noise = (math.random(0, Stealth.CooldownNoise * 2) - Stealth.CooldownNoise) / 1000
+    return base + noise
+end
+
+-- Curve angle with small random offset so it's never identical twice
+local function curveAngle()
+    local base = Settings.CurveAngle
+    if not Stealth.Enabled or Stealth.CurveNoiseDeg <= 0 then return base end
+    local noise = math.random(-Stealth.CurveNoiseDeg * 10, Stealth.CurveNoiseDeg * 10) / 10
+    return base + noise
 end
 
 -- ── Input ─────────────────────────────────────────────────────────────────────
 
-local function fireParry()
-    -- F key only — avoids the risk of mouse1click() accidentally hitting GUI
+local function pressF(hold)
     pcall(function()
         keypress(0x46)
-        task.delay(0.05, function() keyrelease(0x46) end)
+        task.delay(hold or 0.05, function() keyrelease(0x46) end)
     end)
 end
 
-local function fireAbility()
+local function pressE()
+    local hold = holdDuration()
     pcall(function()
-        keypress(0x45)   -- E
-        task.delay(0.05, function() keyrelease(0x45) end)
+        keypress(0x45)
+        task.delay(hold, function() keyrelease(0x45) end)
     end)
 end
 
 -- ── Ball curve ────────────────────────────────────────────────────────────────
--- Rotates HRP so the ball reflects in the desired direction, then restores the
--- original yaw at the current position so movement isn't teleported backward.
--- Locks the camera to Scriptable for one frame to prevent it fighting the rotation.
+-- The HRP rotation and camera restore both happen before the next physics step.
+-- Roblox sends character packets at ~20Hz; rotating and restoring within one
+-- engine step (~16ms) means the server almost certainly never receives the
+-- rotated state in a character replication packet.
 
-local function applyBallCurve(hrp, savedLookXZ)
-    local cam = workspace.CurrentCamera
-    local savedCamType = cam.CameraType
-    local savedCamCF   = cam.CFrame
+local function applyAndRestoreCurve(hrp, savedLook)
+    local cam         = workspace.CurrentCamera
+    local savedCamCF  = cam.CFrame
+    local savedCamTyp = cam.CameraType
 
     cam.CameraType = Enum.CameraType.Scriptable
-    hrp.CFrame = hrp.CFrame * CFrame.Angles(0, math.rad(Settings.CurveAngle), 0)
-    cam.CFrame = savedCamCF   -- suppress visual jerk this frame
+    hrp.CFrame = hrp.CFrame * CFrame.Angles(0, math.rad(curveAngle()), 0)
+    cam.CFrame = savedCamCF
 
+    -- Restore orientation and camera on the very next engine step
     task.defer(function()
-        -- return camera to normal after one engine step
-        cam.CameraType = savedCamType
+        cam.CameraType = savedCamTyp
+        local h = getRootPart()
+        if h then
+            local newLook = Vector3.new(savedLook.X, 0, savedLook.Z)
+            if newLook.Magnitude > 0.01 then
+                h.CFrame = CFrame.lookAt(h.Position, h.Position + newLook)
+            end
+        end
     end)
 end
 
-local function restoreHRPOrientation(hrp, savedLook)
-    -- Restore original yaw at *current* position — never snap the player back
-    local newLook = Vector3.new(savedLook.X, 0, savedLook.Z)
-    if newLook.Magnitude > 0.01 then
-        hrp.CFrame = CFrame.lookAt(hrp.Position, hrp.Position + newLook)
-    end
-end
-
 -- ── Auto Parry loop ───────────────────────────────────────────────────────────
--- History is always updated (runs even when AutoParry is off) so the velocity
--- buffer is warm the moment you enable the toggle.
 
 task.spawn(function()
     while true do
-        RunService.Heartbeat:Wait()   -- true per-frame, not approximate 16ms sleep
+        RunService.Heartbeat:Wait()
 
         local ball = getRealBall()
         if ball then pushBallHistory(ball) end
@@ -210,9 +250,9 @@ task.spawn(function()
         local hrp = getRootPart()
         if not hrp or not ball then Stats.TTI = math.huge; continue end
 
-        -- snapshot settings once per frame so mid-frame slider changes don't interfere
+        -- Snapshot settings once per frame to insulate against mid-frame slider changes
         local parryStartup  = Settings.ParryStartup
-        local parryCooldown = Settings.ParryCooldown
+        local parryCooldown = effectiveCooldown(Settings.ParryCooldown)
 
         local tti = predictTTI(ball, hrp)
         Stats.TTI = tti
@@ -222,31 +262,49 @@ task.spawn(function()
 
         if onCooldown then
             if Settings.AbilityFailsafe and tti < 0.1 then
-                fireAbility()
-                Stats.AbilitiesUsed += 1
+                -- Ability also jittered — instant defensive ability use is suspicious
+                task.delay(gaussMs(40), function()
+                    pressE()
+                    Stats.AbilitiesUsed += 1
+                end)
             end
             continue
         end
 
-        if tti <= parryStartup then
-            local savedLook = hrp.CFrame.LookVector
+        -- Gate: physically impossible reaction time
+        if tooFastForHuman(tti) then continue end
 
-            if Settings.BallCurve then
-                applyBallCurve(hrp)
+        if tti <= parryStartup then
+            -- Intentional miss check — happens BEFORE marking cooldown so the
+            -- ball still hits and the player looks human
+            if shouldMiss() then
+                Stats.Misses += 1
+                continue
             end
 
-            fireParry()
-            Stats.Parries      += 1
+            -- Pre-mark cooldown so jitter delay doesn't allow a double-fire
             Stats.LastParryTime = now
 
-            -- Reset history — the ball now travels in a new direction
-            resetBallHistory()
+            local savedLook = hrp.CFrame.LookVector
 
-            if Settings.BallCurve then
-                task.delay(0.06, function()
-                    local h = getRootPart()
-                    if h then restoreHRPOrientation(h, savedLook) end
-                end)
+            local function executeParry()
+                local h = getRootPart()
+                if not h then return end
+
+                if Settings.BallCurve then applyAndRestoreCurve(h, savedLook) end
+
+                pressF(holdDuration())
+
+                Stats.Parries      += 1
+                consecutiveParries += 1
+                resetBallHistory()
+            end
+
+            local delay = humanDelay()
+            if delay > 0.001 then
+                task.delay(delay, executeParry)
+            else
+                executeParry()
             end
         end
     end
@@ -264,9 +322,8 @@ task.spawn(function()
                     local nameHit = gui.Name:lower():find("ready")
                     local textHit = gui:IsA("TextButton") and gui.Text:lower():find("ready")
                     if nameHit or textHit then
-                        -- :Activate() is the correct API for programmatic button press
                         gui:Activate()
-                        break   -- click once per cycle, not every matching element
+                        break
                     end
                 end
             end
@@ -278,21 +335,19 @@ end)
 
 local fpsFrames, fpsTimer = 0, 0
 RunService.RenderStepped:Connect(function(dt)
-    fpsFrames += 1
-    fpsTimer  += dt
+    fpsFrames += 1; fpsTimer += dt
     if fpsTimer >= 1 then
         Stats.FPS = fpsFrames
-        fpsFrames = 0
-        fpsTimer  = 0
+        fpsFrames = 0; fpsTimer = 0
     end
 end)
 
--- ── Respawn handling ──────────────────────────────────────────────────────────
+-- ── Respawn ───────────────────────────────────────────────────────────────────
 
 LocalPlayer.CharacterAdded:Connect(function(char)
-    -- Wait for humanoid so everything is loaded before resetting state
     char:WaitForChild("Humanoid")
     Stats.LastParryTime = 0
+    consecutiveParries  = 0
     resetBallHistory()
 end)
 
@@ -306,7 +361,10 @@ local Window = Rayfield:CreateWindow({
     KeySystem       = false,
 })
 
-local MainTab = Window:CreateTab("Main", 4483362458)
+local MainTab    = Window:CreateTab("Main",    4483362458)
+local StealthTab = Window:CreateTab("Stealth", 4483362458)
+
+-- ── Main tab ──────────────────────────────────────────────────────────────────
 
 MainTab:CreateSection("Combat")
 
@@ -320,7 +378,7 @@ MainTab:CreateToggle({
 })
 
 MainTab:CreateToggle({
-    Name = "Ability Failsafe  (uses E when parry on CD)",
+    Name = "Ability Failsafe  (E on parry CD)",
     CurrentValue = false, Flag = "AbilityFailsafe",
     Callback = function(v)
         Settings.AbilityFailsafe = v
@@ -356,7 +414,6 @@ MainTab:CreateSlider({
     Callback = function(v) Settings.CurveAngle = v end,
 })
 
--- Lower = fires closer to impact (low ping). Higher = fires earlier (high ping / slow parry startup).
 MainTab:CreateSlider({
     Name = "Parry Startup Offset", Range = { 50, 400 }, Increment = 5,
     Suffix = " ms", CurrentValue = 130, Flag = "ParryStartup",
@@ -376,7 +433,6 @@ local StatusPara = MainTab:CreateParagraph({ Title = "Live", Content = "loading.
 task.spawn(function()
     while true do
         task.wait(0.25)
-
         local ttiStr = Stats.TTI == math.huge and "—"
             or string.format("%.2fs", Stats.TTI)
         local cdLeft = Settings.ParryCooldown - (tick() - Stats.LastParryTime)
@@ -388,10 +444,12 @@ task.spawn(function()
                 Title = "Live",
                 Content = string.format(
                     "FPS: %d   TTI: %s   CD: %s\n"
-                 .. "Parries: %d   Abilities: %d\n"
+                 .. "Parries: %d   Misses: %d   Abil: %d\n"
+                 .. "Streak: %d / %d   Stealth: %s\n"
                  .. "Parry:%s  Fail:%s  Curve:%s  Ready:%s",
                     Stats.FPS, ttiStr, cdStr,
-                    Stats.Parries, Stats.AbilitiesUsed,
+                    Stats.Parries, Stats.Misses, Stats.AbilitiesUsed,
+                    consecutiveParries, Stealth.MaxConsecutive, sw(Stealth.Enabled),
                     sw(Settings.AutoParry), sw(Settings.AbilityFailsafe),
                     sw(Settings.BallCurve),  sw(Settings.AutoReady)
                 ),
@@ -402,13 +460,66 @@ end)
 
 MainTab:CreateButton({
     Name = "Destroy GUI",
-    Callback = function()
-        Rayfield:Destroy()
+    Callback = function() Rayfield:Destroy() end,
+})
+
+-- ── Stealth tab ───────────────────────────────────────────────────────────────
+
+StealthTab:CreateSection("Anti-Detection")
+
+StealthTab:CreateToggle({
+    Name = "Stealth Mode  (humanize all timing)",
+    CurrentValue = true, Flag = "StealthEnabled",
+    Callback = function(v)
+        Stealth.Enabled = v
+        Rayfield:Notify({ Title = "Stealth", Content = v and "Enabled" or "DISABLED — obvious mode", Duration = 4 })
     end,
 })
 
+StealthTab:CreateSection("Timing Humanization")
+
+StealthTab:CreateSlider({
+    Name = "Timing Jitter", Range = { 0, 60 }, Increment = 1,
+    Suffix = " ms", CurrentValue = 22, Flag = "StealthJitter",
+    Callback = function(v) Stealth.JitterMs = v end,
+})
+
+StealthTab:CreateSlider({
+    Name = "Min Reaction Time", Range = { 50, 200 }, Increment = 5,
+    Suffix = " ms", CurrentValue = 85, Flag = "StealthMinReact",
+    Callback = function(v) Stealth.MinReactionMs = v end,
+})
+
+StealthTab:CreateSlider({
+    Name = "Cooldown Noise", Range = { 0, 150 }, Increment = 5,
+    Suffix = " ms", CurrentValue = 55, Flag = "StealthCDNoise",
+    Callback = function(v) Stealth.CooldownNoise = v end,
+})
+
+StealthTab:CreateSection("Miss Pattern")
+
+StealthTab:CreateSlider({
+    Name = "Miss Chance", Range = { 0, 20 }, Increment = 1,
+    Suffix = " %", CurrentValue = 5, Flag = "StealthMiss",
+    Callback = function(v) Stealth.MissChance = v / 100 end,
+})
+
+StealthTab:CreateSlider({
+    Name = "Max Consecutive Parries", Range = { 5, 35 }, Increment = 1,
+    Suffix = "", CurrentValue = 14, Flag = "StealthMaxStreak",
+    Callback = function(v) Stealth.MaxConsecutive = v end,
+})
+
+StealthTab:CreateSection("Curve Variation")
+
+StealthTab:CreateSlider({
+    Name = "Curve Angle Noise", Range = { 0, 15 }, Increment = 1,
+    Suffix = " °", CurrentValue = 5, Flag = "StealthCurveNoise",
+    Callback = function(v) Stealth.CurveNoiseDeg = v end,
+})
+
 Rayfield:Notify({
-    Title    = "Death Ball Loaded",
-    Content  = "All systems ready.",
+    Title   = "Death Ball Loaded",
+    Content = "All systems ready. Stealth ON.",
     Duration = 5,
 })
