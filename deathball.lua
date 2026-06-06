@@ -187,18 +187,24 @@ local function pushBallHistory(ball)
 end
 
 local function getSmoothedVelocity(ball)
-    if #ballHistory < 2 then return ball.Velocity end
-    local wVel, wTotal = Vector3.zero, 0.0
-    for i = 2, #ballHistory do
-        local prev, curr = ballHistory[i-1], ballHistory[i]
-        local dt = curr.t - prev.t
-        if dt >= 0.001 then
-            local w = i
-            wVel   = wVel   + (curr.pos - prev.pos) / dt * w
-            wTotal = wTotal + w
+    -- Prefer physics velocity when it's meaningfully non-zero (BodyVelocity games)
+    if ball.Velocity.Magnitude > 1 then return ball.Velocity end
+
+    -- Position-delta estimate from history: scan backwards for the most recent
+    -- pair of frames that show actual movement (robust to CFrame-based balls
+    -- where many consecutive frames share the same replicated position)
+    if #ballHistory >= 2 then
+        for i = #ballHistory, 2, -1 do
+            local prev, curr = ballHistory[i-1], ballHistory[i]
+            local dt = curr.t - prev.t
+            local dp = curr.pos - prev.pos
+            if dt >= 0.001 and dp.Magnitude > 0.05 then
+                return dp / dt
+            end
         end
     end
-    return wTotal > 0 and (wVel / wTotal) or ball.Velocity
+
+    return ball.Velocity
 end
 
 local function predictTTI(ball, hrp)
@@ -212,8 +218,14 @@ local function predictTTI(ball, hrp)
     local effDist      = math.max(0, dist - ballRadius - playerRadius)
 
     local closing = vel:Dot(toHRP.Unit)
-    if closing <= 0 then return math.huge end
-    return effDist / closing
+    if closing > 0 then return effDist / closing end
+
+    -- Ball not closing on direct axis — could be curved trajectory or stale velocity.
+    -- Fall back to distance / speed so we still react when ball is visibly close.
+    local speed = vel.Magnitude
+    if speed > 0.5 then return effDist / speed end
+
+    return math.huge
 end
 
 -- ── Anti-detection helpers ────────────────────────────────────────────────────
@@ -652,7 +664,8 @@ task.spawn(function()
         local cdLeft  = Settings.ParryCooldown - (tick() - Stats.LastParryTime)
         local cdStr   = cdLeft > 0 and string.format("%.1fs", cdLeft) or "Ready"
         local ball    = getRealBall()
-        local ballStr = ball and ball.Name or "NONE — check ball name!"
+        local ballStr = ball and string.format("%s  spd=%.0f", ball.Name, ball.Velocity.Magnitude)
+                             or "NONE"
         local function sw(b) return b and "ON" or "off" end
 
         pcall(function()
@@ -749,7 +762,7 @@ StealthTab:CreateSlider({
 })
 
 Rayfield:Notify({
-    Title   = "Death Ball  [v8]  Loaded",
+    Title   = "Death Ball  [v9]  Loaded",
     Content = "All systems ready. Stealth ON.",
     Duration = 5,
 })
