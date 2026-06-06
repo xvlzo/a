@@ -19,6 +19,9 @@ local Settings = {
 
 -- ── Anti-detection settings ───────────────────────────────────────────────────
 -- Every value here makes the parry pattern look less machine-generated.
+-- Base values are then fuzzed at load time so no two sessions share the same
+-- behavioral fingerprint — an AC building a signature from timing histograms
+-- will get a different distribution each run.
 
 local Stealth = {
     Enabled        = true,
@@ -29,7 +32,25 @@ local Stealth = {
     HoldVariance   = true,  -- randomize key hold duration
     CooldownNoise  = 55,    -- ±ms of noise added to cooldown gate each check
     CurveNoiseDeg  = 5,     -- ±degrees of random offset on ball curve angle
+    MouseRatio     = 0.35,  -- probability to use LMB instead of F key
+    WarmupSec      = 1.8,   -- extra reaction delay for first N seconds after spawn
+    FailsafeTTI    = 0.10,  -- TTI threshold for ability failsafe trigger
 }
+
+-- Session fingerprint randomization: each script load gets slightly different
+-- timing parameters so no two sessions produce the same statistical distribution.
+do
+    local r = math.random
+    Stealth.JitterMs       = 17 + r(0, 10)          -- 17–27ms
+    Stealth.MissChance     = 0.035 + r() * 0.025    -- 3.5–6%
+    Stealth.MinReactionMs  = 78 + r(0, 14)          -- 78–92ms
+    Stealth.MaxConsecutive = 11 + r(0, 6)           -- 11–17
+    Stealth.CooldownNoise  = 42 + r(0, 26)          -- 42–68ms
+    Stealth.CurveNoiseDeg  = 3  + r(0, 4)           -- 3–7°
+    Stealth.MouseRatio     = 0.25 + r() * 0.20      -- 25–45%
+    Stealth.WarmupSec      = 1.2 + r() * 1.2        -- 1.2–2.4s
+    Stealth.FailsafeTTI    = 0.08 + r() * 0.04      -- 80–120ms
+end
 
 local Stats = {
     Parries       = 0,
@@ -154,11 +175,22 @@ local consecutiveParries = 0
 local postMissBump       = 0     -- extra miss chance for next N parries after a miss
 local roundPerformance   = 1.0   -- per-round multiplier on miss chance (0.7–1.3)
 local perParryStartupMs  = 0     -- per-parry startup offset, resampled each fire
+local spawnTime          = 0     -- tick() at last respawn, used for warm-up window
 
 -- Resample round-level performance — called on each new character / round
 local function resampleRoundPerformance()
     -- Uniform [0.7, 1.3]: some rounds you play better, some worse
     roundPerformance = 0.7 + math.random() * 0.6
+end
+
+-- Extra startup added in the first WarmupSec seconds after spawning.
+-- Simulates a player orienting themselves before full reaction speed.
+local function warmupExtraMs()
+    if not Stealth.Enabled or Stealth.WarmupSec <= 0 then return 0 end
+    local elapsed = tick() - spawnTime
+    if elapsed >= Stealth.WarmupSec then return 0 end
+    -- Linearly decays from 120ms extra at spawn to 0 at WarmupSec
+    return 120 * (1 - elapsed / Stealth.WarmupSec)
 end
 
 resampleRoundPerformance()  -- initial sample at load
@@ -233,11 +265,23 @@ end
 
 -- ── Input ─────────────────────────────────────────────────────────────────────
 
-local function pressF(hold)
-    pcall(function()
-        keypress(0x46)
-        task.delay(hold or 0.05, function() keyrelease(0x46) end)
-    end)
+-- Randomly alternate between F key and LMB so neither input method dominates.
+-- Real players tend to gravitate to one or the other but not with 100% consistency.
+local function pressParry(hold)
+    hold = hold or 0.05
+    if Stealth.Enabled and math.random() < Stealth.MouseRatio then
+        -- LMB variant
+        pcall(function()
+            mouse1press()
+            task.delay(hold, function() mouse1release() end)
+        end)
+    else
+        -- F key variant
+        pcall(function()
+            keypress(0x46)
+            task.delay(hold, function() keyrelease(0x46) end)
+        end)
+    end
 end
 
 local function pressE()
@@ -263,7 +307,9 @@ local function applyAndRestoreCurve(hrp, savedLook)
     hrp.CFrame = hrp.CFrame * CFrame.Angles(0, math.rad(curveAngle()), 0)
     cam.CFrame = savedCamCF
 
-    -- Restore orientation and camera on the very next engine step
+    -- Restore orientation and camera on the very next engine step.
+    -- Both happen before the next character replication packet (~50ms cadence),
+    -- so the server almost never captures the rotated state.
     task.defer(function()
         cam.CameraType = savedCamTyp
         local h = getRootPart()
@@ -274,6 +320,11 @@ local function applyAndRestoreCurve(hrp, savedLook)
             end
         end
     end)
+end
+
+-- Returns the effective parry startup for this frame, including warm-up extra
+local function currentEffectiveStartup(base)
+    return currentParryStartup(base) + warmupExtraMs() / 1000
 end
 
 -- ── Auto Parry loop ───────────────────────────────────────────────────────────
@@ -294,7 +345,7 @@ task.spawn(function()
         if not hrp or not ball then Stats.TTI = math.huge; continue end
 
         -- Snapshot settings once per frame to insulate against mid-frame slider changes
-        local parryStartup  = currentParryStartup(Settings.ParryStartup)
+        local parryStartup  = currentEffectiveStartup(Settings.ParryStartup)
         local parryCooldown = effectiveCooldown(Settings.ParryCooldown)
 
         local tti = predictTTI(ball, hrp)
@@ -304,7 +355,7 @@ task.spawn(function()
         local onCooldown = (now - Stats.LastParryTime) < parryCooldown
 
         if onCooldown then
-            if Settings.AbilityFailsafe and tti < 0.1 then
+            if Settings.AbilityFailsafe and tti < Stealth.FailsafeTTI then
                 -- Jitter ability press too — instant defensive use is suspicious
                 task.delay(gaussMs(40), function()
                     if isAlive() then
@@ -340,7 +391,7 @@ task.spawn(function()
 
                 if Settings.BallCurve then applyAndRestoreCurve(h, savedLook) end
 
-                pressF(holdDuration())
+                pressParry(holdDuration())
 
                 Stats.Parries      += 1
                 consecutiveParries += 1
@@ -397,10 +448,13 @@ LocalPlayer.CharacterAdded:Connect(function(char)
     Stats.LastParryTime = 0
     consecutiveParries  = 0
     postMissBump        = 0
+    spawnTime           = tick()
     resetBallHistory()
-    resampleRoundPerformance()   -- each round has different baseline performance
+    resampleRoundPerformance()
     resamplePerParryStartup()
 end)
+
+spawnTime = tick()  -- initialise for the first life
 
 -- ── GUI ───────────────────────────────────────────────────────────────────────
 
