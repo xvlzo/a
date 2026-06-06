@@ -18,7 +18,7 @@ local Settings = {
     BallCurve       = false,
     AutoReady       = false,
     CurveAngle      = 180,
-    ParryStartup    = 0.13,
+    ParryStartup    = 0.25,
     ParryCooldown   = 0.8,
 }
 
@@ -107,6 +107,33 @@ workspace.DescendantAdded:Connect(onDescendantAdded)
 workspace.DescendantRemoving:Connect(onDescendantRemoving)
 
 for _, obj in ipairs(workspace:GetDescendants()) do onDescendantAdded(obj) end
+
+-- Fallback scanner: if name-based detection finds nothing, broaden to any
+-- non-anchored, non-character, ball-sized BasePart in workspace.
+-- Runs every 1s so it doesn't burn frame time, and stops once a ball is found.
+task.spawn(function()
+    while true do
+        task.wait(1)
+        if getRealBall() then continue end
+        for _, obj in ipairs(workspace:GetDescendants()) do
+            if not obj:IsA("BasePart") or obj.Anchored then continue end
+            -- Skip player character parts (Humanoid within 2 levels up)
+            local p = obj.Parent
+            if p then
+                if p:FindFirstChildOfClass("Humanoid") then continue end
+                local gp = p.Parent
+                if gp and gp:FindFirstChildOfClass("Humanoid") then continue end
+            end
+            local s   = obj.Size
+            local mn  = math.min(s.X, s.Y, s.Z)
+            local mx  = math.max(s.X, s.Y, s.Z)
+            -- Roughly ball-sized: 0.3–20 studs, not wildly non-spherical
+            if mn >= 0.3 and mx <= 20 and (mx / mn) < 2.5 then
+                cachedBalls[obj] = true
+            end
+        end
+    end
+end)
 
 local function isRealBall(part)
     if not part.Parent                then return false end
@@ -605,8 +632,8 @@ MainTab:CreateSlider({
 })
 
 MainTab:CreateSlider({
-    Name = "Parry Startup Offset", Range = { 50, 400 }, Increment = 5,
-    Suffix = " ms", CurrentValue = 130, Flag = "ParryStartup",
+    Name = "Parry Startup Offset", Range = { 50, 500 }, Increment = 5,
+    Suffix = " ms", CurrentValue = 250, Flag = "ParryStartup",
     Callback = function(v) Settings.ParryStartup = v / 1000 end,
 })
 
@@ -652,6 +679,14 @@ task.spawn(function()
         end)
     end
 end)
+
+MainTab:CreateButton({
+    Name = "Test Parry  (fires key right now)",
+    Callback = function()
+        pressParry(0.1)
+        Rayfield:Notify({ Title = "Test Parry", Content = "Sent F + LMB input", Duration = 2 })
+    end,
+})
 
 MainTab:CreateButton({
     Name = "Destroy GUI",
