@@ -91,11 +91,10 @@ local lastBounceTime = 0    -- tick() of last direction-reversal reset; used for
 
 -- ── Ball cache ────────────────────────────────────────────────────────────────
 
-local BALL_NAMES  = { ball = true, deathball = true, football = true, soccerball = true }
 local cachedBalls = {}
 
 local function onDescendantAdded(obj)
-    if obj:IsA("BasePart") and BALL_NAMES[obj.Name:lower()] then
+    if obj:IsA("BasePart") and obj.Name:lower():find("ball") then
         cachedBalls[obj] = true
     end
 end
@@ -111,7 +110,7 @@ for _, obj in ipairs(workspace:GetDescendants()) do onDescendantAdded(obj) end
 
 local function isRealBall(part)
     if not part.Parent                then return false end
-    if part.Transparency >= 0.5       then return false end
+    if part.Transparency >= 0.9       then return false end  -- only reject fully-invisible parts
     if part:GetAttribute("Fake")      then return false end
     if part.Name:lower():find("fake") then return false end
     if part:FindFirstChild("FakeTag") then return false end
@@ -624,20 +623,24 @@ local StatusPara = MainTab:CreateParagraph({ Title = "Live", Content = "loading.
 task.spawn(function()
     while true do
         task.wait(0.25)
-        local ttiStr = Stats.TTI == math.huge and "—"
+        local ttiStr  = Stats.TTI == math.huge and "—"
             or string.format("%.2fs", Stats.TTI)
-        local cdLeft = Settings.ParryCooldown - (tick() - Stats.LastParryTime)
-        local cdStr  = cdLeft > 0 and string.format("%.1fs", cdLeft) or "Ready"
+        local cdLeft  = Settings.ParryCooldown - (tick() - Stats.LastParryTime)
+        local cdStr   = cdLeft > 0 and string.format("%.1fs", cdLeft) or "Ready"
+        local ball    = getRealBall()
+        local ballStr = ball and ball.Name or "NONE — check ball name!"
         local function sw(b) return b and "ON" or "off" end
 
         pcall(function()
             StatusPara:Set({
                 Title = "Live",
                 Content = string.format(
-                    "FPS: %d   TTI: %s   CD: %s\n"
+                    "Ball: %s\n"
+                 .. "FPS: %d   TTI: %s   CD: %s\n"
                  .. "Parries: %d   Misses: %d   Abil: %d\n"
                  .. "Streak: %d/%d   Perf: %.0f%%   Fumble: %d\n"
                  .. "Stealth:%s  Parry:%s  Fail:%s  Curve:%s",
+                    ballStr,
                     Stats.FPS, ttiStr, cdStr,
                     Stats.Parries, Stats.Misses, Stats.AbilitiesUsed,
                     consecutiveParries, Stealth.MaxConsecutive,
