@@ -79,6 +79,16 @@ local function isAlive()
     return hum ~= nil and hum.Health > 0
 end
 
+-- ── Ball + prediction state ─────────────────────────────────────────────────
+-- Declared here so getRealBall() (which reads lastBallPos) and pushBallHistory()
+-- (which writes it) both close over the same local — Lua scoping requires
+-- declarations to precede the functions that reference them.
+
+local HISTORY_SIZE   = 8
+local ballHistory    = {}
+local lastBallPos    = nil
+local lastBounceTime = 0    -- tick() of last direction-reversal reset; used for post-bounce jitter
+
 -- ── Ball cache ────────────────────────────────────────────────────────────────
 
 local BALL_NAMES  = { ball = true, deathball = true, football = true, soccerball = true }
@@ -126,11 +136,11 @@ end
 
 -- ── Prediction engine ─────────────────────────────────────────────────────────
 
-local HISTORY_SIZE = 8
-local ballHistory  = {}
-local lastBallPos  = nil
-
-local function resetBallHistory()
+-- isBounce=true: mid-flight direction change or re-serve; sets lastBounceTime so
+-- humanDelay() can add post-bounce hesitation.  Call without the flag for
+-- spawn-resets or post-parry flushes where no hesitation is wanted.
+local function resetBallHistory(isBounce)
+    if isBounce and #ballHistory >= 2 then lastBounceTime = tick() end
     ballHistory = {}
     lastBallPos = nil
 end
@@ -138,15 +148,15 @@ end
 local function pushBallHistory(ball)
     if lastBallPos then
         local delta = ball.Position - lastBallPos
-        -- Large jump: ball re-served or teleported
+        -- Large jump: ball re-served or teleported — re-acquire from scratch
         if delta.Magnitude > 60 then
-            resetBallHistory()
+            resetBallHistory(true)
         -- Direction reversal (>120°): ball bounced off another player — flush old
         -- trajectory so the velocity estimate corrects in 1–2 frames instead of ~8
         elseif #ballHistory >= 2 and delta.Magnitude > 0.01 then
             local prev = ballHistory[#ballHistory].pos - ballHistory[math.max(1, #ballHistory-1)].pos
             if prev.Magnitude > 0.01 and delta.Unit:Dot(prev.Unit) < -0.5 then
-                resetBallHistory()
+                resetBallHistory(true)
             end
         end
     end
@@ -195,14 +205,24 @@ end
 local consecutiveParries = 0
 local postMissBump       = 0     -- extra miss chance for next N parries after a miss
 local roundPerformance   = 1.0   -- per-round multiplier on miss chance (0.7–1.3)
+local roundTTIOffsetMs   = 0     -- per-round TTI trigger offset (–8 to +8 ms) for histogram variance
 local perParryStartupMs  = 0     -- per-parry startup offset, resampled each fire
 local spawnTime          = 0     -- tick() at last respawn, used for warm-up window
 local lastAbilityTime    = 0     -- prevents double-firing ability on successive frames
 
+-- Per-parry startup offset: resampled each time we fire, ±15ms.
+-- Defined here (before its call at the end of this block) so the local is in scope.
+local function resamplePerParryStartup()
+    perParryStartupMs = (math.random(-150, 150)) / 10   -- –15 to +15ms
+end
+
 -- Resample round-level performance — called on each new character / round
 local function resampleRoundPerformance()
     -- Uniform [0.7, 1.3]: some rounds you play better, some worse
-    roundPerformance = 0.7 + math.random() * 0.6
+    roundPerformance   = 0.7 + math.random() * 0.6
+    -- Small per-round shift of when we pull the trigger — spreads the per-session
+    -- TTI-at-fire histogram so it doesn't cluster at a fixed offset from parryStartup
+    roundTTIOffsetMs   = math.random(-8, 8)
 end
 
 -- Extra startup added in the first WarmupSec seconds after spawning.
@@ -244,21 +264,28 @@ local function shouldMiss()
     return false
 end
 
--- Never fire faster than a human physically can react
+-- Never fire faster than a human physically can react.
+-- Clamps effective floor to 90% of current ParryStartup so that if the user
+-- sets MinReactionMs > ParryStartup (e.g. 200ms + 50ms startup), the gate
+-- doesn't block all parries and silently break the script.
 local function tooFastForHuman(tti)
-    return Stealth.Enabled and tti < (Stealth.MinReactionMs / 1000)
+    if not Stealth.Enabled then return false end
+    local floor = math.min(Stealth.MinReactionMs / 1000, Settings.ParryStartup * 0.9)
+    return tti < floor
 end
 
--- Random delay added after trigger condition is met
+-- Random delay added after trigger condition is met.
+-- Adds extra hesitation immediately after a ball direction-reversal (bounce),
+-- simulating the moment a human loses and then re-acquires ball tracking.
 local function humanDelay()
     if not Stealth.Enabled or Stealth.JitterMs <= 0 then return 0 end
-    return gaussMs(Stealth.JitterMs * 2)
-end
-
--- Per-parry startup offset: resampled each time we fire, ±15ms
--- Makes the TTI-at-fire distribution wide and natural rather than a fixed value
-local function resamplePerParryStartup()
-    perParryStartupMs = (math.random(-150, 150)) / 10   -- –15 to +15ms
+    local base      = gaussMs(Stealth.JitterMs * 2)
+    local bounceAge = tick() - lastBounceTime
+    if bounceAge < 0.25 then
+        -- Up to 30ms extra jitter, decaying linearly over 250ms post-bounce
+        base = base + gaussMs(30) * (1 - bounceAge / 0.25)
+    end
+    return base
 end
 
 local function currentParryStartup(base)
@@ -345,9 +372,11 @@ local function applyAndRestoreCurve(hrp, savedLook)
     end)
 end
 
--- Returns the effective parry startup for this frame, including warm-up extra
+-- Returns the effective parry startup for this frame.
+-- roundTTIOffsetMs varies each round so the per-session TTI-at-fire histogram
+-- never converges to a single spike that an AC could use as a signature.
 local function currentEffectiveStartup(base)
-    return currentParryStartup(base) + warmupExtraMs() / 1000
+    return currentParryStartup(base) + warmupExtraMs() / 1000 + roundTTIOffsetMs / 1000
 end
 
 -- ── Auto Parry loop ───────────────────────────────────────────────────────────
@@ -484,6 +513,7 @@ LocalPlayer.CharacterAdded:Connect(function(char)
     lastAbilityTime     = 0
     consecutiveParries  = 0
     postMissBump        = 0
+    lastBounceTime      = 0
     spawnTime           = t
     resetBallHistory()
     resampleRoundPerformance()
