@@ -14,7 +14,7 @@ local Settings = {
     BallESP         = false,
     PlayerESP       = false,
     CurveAngle      = 180,
-    ParryDistance   = 20,
+    ParryStartup    = 0.13,  -- fire parry this many seconds before predicted impact
     ParryCooldown   = 0.8,
 }
 
@@ -23,6 +23,7 @@ local Stats = {
     AbilitiesUsed = 0,
     FPS           = 0,
     LastParryTime = 0,
+    TTI           = math.huge,   -- time-to-impact in seconds (for status panel)
 }
 
 local ESPObjects = {}
@@ -72,11 +73,69 @@ local function getRealBall()
     return candidates[1]
 end
 
-local function isBallHeadingToward(ball, hrp)
-    local vel = ball.Velocity
-    if vel.Magnitude < 1 then return false end
-    local toPlayer = hrp.Position - ball.Position
-    return vel.Unit:Dot(toPlayer.Unit) > 0.3
+-- ── Prediction engine ────────────────────────────────────────────────────────
+-- ball.Velocity is jittery over the network; we maintain a rolling history of
+-- real positions sampled each frame and compute a weighted-average velocity from
+-- it.  Recent frames are weighted more heavily so we react to direction changes
+-- quickly without losing smoothness.
+
+local HISTORY_SIZE = 8
+local ballHistory  = {}      -- { pos: Vector3, t: number }[]
+local lastBallPos  = nil
+
+local function pushBallHistory(ball)
+    -- discard stale history when the ball resets / is re-served
+    if lastBallPos and (ball.Position - lastBallPos).Magnitude > 60 then
+        ballHistory = {}
+    end
+    lastBallPos = ball.Position
+
+    table.insert(ballHistory, { pos = ball.Position, t = tick() })
+    if #ballHistory > HISTORY_SIZE then
+        table.remove(ballHistory, 1)
+    end
+end
+
+local function getSmoothedVelocity(ball)
+    if #ballHistory < 2 then return ball.Velocity end
+
+    local weightedVel = Vector3.zero
+    local totalWeight = 0
+
+    for i = 2, #ballHistory do
+        local prev = ballHistory[i - 1]
+        local curr = ballHistory[i]
+        local dt   = curr.t - prev.t
+        if dt > 0.0005 then
+            local frameVel = (curr.pos - prev.pos) / dt
+            -- linear ramp: oldest frame = weight 1, newest = weight HISTORY_SIZE
+            local w = i
+            weightedVel = weightedVel + frameVel * w
+            totalWeight = totalWeight + w
+        end
+    end
+
+    return totalWeight > 0 and (weightedVel / totalWeight) or ball.Velocity
+end
+
+-- Returns seconds until ball edge touches player hitbox edge.
+-- Returns math.huge when the ball is not closing in.
+local function predictTTI(ball, hrp)
+    local vel    = getSmoothedVelocity(ball)
+    local toHRP  = hrp.Position - ball.Position
+    local dist   = toHRP.Magnitude
+
+    if dist < 0.01 then return 0 end
+
+    local ballRadius   = ball.Size.Magnitude * 0.5
+    local playerRadius = hrp.Size.Magnitude  * 0.5
+    local effectiveDist = math.max(0, dist - ballRadius - playerRadius)
+
+    -- component of velocity pointing at us
+    local closingSpeed = vel:Dot(toHRP.Unit)
+    if closingSpeed < 0.5 then return math.huge end
+
+    return effectiveDist / closingSpeed
 end
 
 -- UNC input (high UNC executor — no fallbacks needed)
@@ -103,42 +162,50 @@ local function applyBallCurve(hrp)
 end
 
 -- ── Auto Parry loop ───────────────────────────────────────────────────────────
+-- Runs every frame. Always pushes ball history (so the velocity buffer is warm
+-- even before AutoParry is toggled on). Fires the parry input when the predicted
+-- time-to-impact drops to or below Settings.ParryStartup, meaning the parry
+-- active window will open exactly as the ball arrives.
 task.spawn(function()
     while true do
         task.wait(0.016)
+
+        local ball = getRealBall()
+        if ball then pushBallHistory(ball) end
+
         if not Settings.AutoParry then continue end
 
-        local hrp  = getRootPart()
-        local ball = getRealBall()
-        if not hrp or not ball then continue end
+        local hrp = getRootPart()
+        if not hrp or not ball then Stats.TTI = math.huge; continue end
 
-        local dist     = (ball.Position - hrp.Position).Magnitude
-        local heading  = isBallHeadingToward(ball, hrp)
-        if not heading then continue end
+        local tti = predictTTI(ball, hrp)
+        Stats.TTI = tti
 
         local now        = tick()
         local onCooldown = (now - Stats.LastParryTime) < Settings.ParryCooldown
 
         if onCooldown then
-            if Settings.AbilityFailsafe and dist < 10 then
+            -- parry is on CD — use ability as emergency if impact is imminent
+            if Settings.AbilityFailsafe and tti < 0.12 then
                 fireAbility()
                 Stats.AbilitiesUsed += 1
             end
             continue
         end
 
-        if dist <= Settings.ParryDistance then
+        if tti <= Settings.ParryStartup then
             local savedHRP = hrp.CFrame
 
-            if Settings.BallCurve then
-                applyBallCurve(hrp)
-            end
+            if Settings.BallCurve then applyBallCurve(hrp) end
 
             fireParry()
             Stats.Parries      += 1
             Stats.LastParryTime = now
 
-            -- restore HRP after input is consumed
+            -- clear history so the reversed ball starts fresh
+            ballHistory = {}
+            lastBallPos = nil
+
             if Settings.BallCurve then
                 task.delay(0.05, function()
                     local h = getRootPart()
@@ -348,10 +415,14 @@ MainTab:CreateSlider({
     Callback = function(v) Settings.CurveAngle = v end,
 })
 
+-- Parry startup = how many ms before impact to fire the input.
+-- Tune this to match your ping + the game's parry animation startup.
+-- Lower  = fires closer to impact (better for low ping).
+-- Higher = fires earlier (compensates for high ping or slow parry startup).
 MainTab:CreateSlider({
-    Name = "Parry Distance", Range = { 5, 60 }, Increment = 1,
-    Suffix = " st", CurrentValue = 20, Flag = "ParryDistance",
-    Callback = function(v) Settings.ParryDistance = v end,
+    Name = "Parry Startup Offset", Range = { 50, 400 }, Increment = 5,
+    Suffix = " ms", CurrentValue = 130, Flag = "ParryStartup",
+    Callback = function(v) Settings.ParryStartup = v / 1000 end,
 })
 
 MainTab:CreateSlider({
@@ -367,11 +438,8 @@ local StatusPara = MainTab:CreateParagraph({ Title = "Live", Content = "loading.
 task.spawn(function()
     while true do
         task.wait(0.25)
-        local hrp  = getRootPart()
-        local ball = getRealBall()
-        local dist = (hrp and ball)
-            and (math.floor((ball.Position - hrp.Position).Magnitude) .. " st")
-            or  "N/A"
+        local ttiStr = Stats.TTI == math.huge and "—"
+            or string.format("%.2fs", Stats.TTI)
         local cdLeft = Settings.ParryCooldown - (tick() - Stats.LastParryTime)
         local cdStr  = cdLeft > 0 and string.format("%.1fs", cdLeft) or "Ready"
 
@@ -381,10 +449,10 @@ task.spawn(function()
             StatusPara:Set({
                 Title = "Live",
                 Content = string.format(
-                    "FPS: %d   Ball: %s   CD: %s\n"
+                    "FPS: %d   TTI: %s   CD: %s\n"
                  .. "Parries: %d   Abilities: %d\n"
                  .. "Parry:%s  Fail:%s  Curve:%s  Ready:%s",
-                    Stats.FPS, dist, cdStr,
+                    Stats.FPS, ttiStr, cdStr,
                     Stats.Parries, Stats.AbilitiesUsed,
                     sw(Settings.AutoParry), sw(Settings.AbilityFailsafe),
                     sw(Settings.BallCurve),  sw(Settings.AutoReady)
