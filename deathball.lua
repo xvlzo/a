@@ -116,6 +116,9 @@ end
 local function onDescendantAdded(obj)
     if obj:IsA("BasePart") and obj.Name:lower():find("ball") then
         namedBalls[obj] = true
+        -- Track immediately — don't wait for the 0.5s background tick.
+        -- Avoids a gap where the ball is in workspace but trackedBall is still nil.
+        if not trackedBall then trackedBall = obj end
     end
 end
 local function onDescendantRemoving(obj)
