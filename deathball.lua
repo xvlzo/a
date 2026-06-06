@@ -1,5 +1,10 @@
 local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
 
+-- Ensure math.random is seeded uniquely each session.
+-- Some executors use a fixed default seed; this prevents deterministic jitter.
+math.randomseed(tick() * 1e5 + os.clock() * 1e8)
+math.random(); math.random()   -- discard first two values (common Lua practice)
+
 local Players    = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
@@ -268,22 +273,22 @@ end
 -- ── Input ─────────────────────────────────────────────────────────────────────
 
 -- Randomly alternate between F key and LMB so neither input method dominates.
--- Real players tend to gravitate to one or the other but not with 100% consistency.
+-- Falls back to F key if mouse1press/mouse1release are unavailable on this executor.
 local function pressParry(hold)
     hold = hold or 0.05
-    if Stealth.Enabled and math.random() < Stealth.MouseRatio then
-        -- LMB variant
-        pcall(function()
+    local useMouse = Stealth.Enabled and math.random() < Stealth.MouseRatio
+    if useMouse then
+        local ok = pcall(function()
             mouse1press()
-            task.delay(hold, function() mouse1release() end)
+            task.delay(hold, function() pcall(mouse1release) end)
         end)
-    else
-        -- F key variant
-        pcall(function()
-            keypress(0x46)
-            task.delay(hold, function() keyrelease(0x46) end)
-        end)
+        if ok then return end
+        -- mouse functions unavailable — fall through to F key
     end
+    pcall(function()
+        keypress(0x46)
+        task.delay(hold, function() keyrelease(0x46) end)
+    end)
 end
 
 local function pressE()
