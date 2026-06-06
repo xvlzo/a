@@ -20,6 +20,7 @@ local Settings = {
     CurveAngle      = 180,
     ParryStartup    = 0.25,
     ParryCooldown   = 0.8,
+    PanicDist       = 20,   -- studs: distance trigger when velocity unknown
 }
 
 -- ── Anti-detection settings ───────────────────────────────────────────────────
@@ -462,20 +463,23 @@ task.spawn(function()
             continue
         end
 
-        -- Gate: physically impossible reaction time
-        if tooFastForHuman(tti) then continue end
+        local ballDist = (ball.Position - hrp.Position).Magnitude
 
-        -- Occasionally simulate a brief "looking away" moment (~once every 3–4 min).
-        -- Only starts a lapse when the ball is safely far (TTI > 1s) so it never
-        -- causes a hit; humans stop a lapse the instant the ball is close.
-        if Stealth.Enabled then
+        -- Two trigger modes:
+        --  TTI mode  : velocity is known → predictive, stealth-gated, natural timing
+        --  Dist mode : velocity unknown (TTI huge) → fire when ball is within PanicDist
+        local ttiKnown    = tti < 999
+        local ttiTrigger  = ttiKnown and not tooFastForHuman(tti) and tti <= parryStartup
+        local distTrigger = not ttiKnown and ballDist <= Settings.PanicDist
+
+        if Stealth.Enabled and ttiKnown then
             if tti > 1.0 and math.random() < 0.00008 then
-                attentionLapseUntil = tick() + 0.15 + math.random() * 0.45  -- 150–600ms
+                attentionLapseUntil = tick() + 0.15 + math.random() * 0.45
             end
-            if tick() < attentionLapseUntil then continue end
+            if tick() < attentionLapseUntil then ttiTrigger = false end
         end
 
-        if tti <= parryStartup then
+        if ttiTrigger or distTrigger then
             -- Intentional miss — happens BEFORE marking cooldown so ball actually hits
             if shouldMiss() then
                 Stats.Misses += 1
@@ -647,6 +651,12 @@ MainTab:CreateSlider({
 })
 
 MainTab:CreateSlider({
+    Name = "Panic Distance  (fallback when speed=0)", Range = { 5, 50 }, Increment = 1,
+    Suffix = " st", CurrentValue = 20, Flag = "PanicDist",
+    Callback = function(v) Settings.PanicDist = v end,
+})
+
+MainTab:CreateSlider({
     Name = "Parry Cooldown", Range = { 3, 20 }, Increment = 1,
     Suffix = " t/10s", CurrentValue = 8, Flag = "ParryCooldown",
     Callback = function(v) Settings.ParryCooldown = v / 10 end,
@@ -762,7 +772,7 @@ StealthTab:CreateSlider({
 })
 
 Rayfield:Notify({
-    Title   = "Death Ball  [v9]  Loaded",
+    Title   = "Death Ball  [v10]  Loaded",
     Content = "All systems ready. Stealth ON.",
     Duration = 5,
 })
