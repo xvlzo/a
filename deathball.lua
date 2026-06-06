@@ -129,9 +129,10 @@ workspace.DescendantAdded:Connect(onDescendantAdded)
 workspace.DescendantRemoving:Connect(onDescendantRemoving)
 for _, obj in ipairs(workspace:GetDescendants()) do onDescendantAdded(obj) end
 
--- Picks and caches the best ball candidate.  Called every 0.5s by background task.
+-- Picks the best ball from namedBalls.  Called every 0.5s to handle the case
+-- where multiple "ball"-named parts exist simultaneously (e.g. Gazo fakes).
+-- onDescendantAdded already handles the fast path for single-ball games.
 local function updateTrackedBall()
-    -- Pass 1: prefer parts whose name contains "ball"
     local best, bestScore = nil, -1
     for part in pairs(namedBalls) do
         if part.Parent and not isFakeBall(part) then
@@ -142,22 +143,7 @@ local function updateTrackedBall()
             if score > bestScore then best, bestScore = part, score end
         end
     end
-    if best then trackedBall = best; return end
-
-    -- Pass 2: fallback — scan workspace once for the closest unanchored,
-    -- non-character, ball-sized BasePart.  Only reached when name cache is empty.
-    local hrp, bestDist = getRootPart(), math.huge
-    for _, obj in ipairs(workspace:GetDescendants()) do
-        if not obj:IsA("BasePart") or obj.Anchored then continue end
-        if isFakeBall(obj) or isCharacterPart(obj) then continue end
-        local s  = obj.Size
-        local mn = math.min(s.X, s.Y, s.Z)
-        local mx = math.max(s.X, s.Y, s.Z)
-        if mn < 0.3 or mx > 20 or (mx / mn) > 2.5 then continue end
-        local dist = hrp and (obj.Position - hrp.Position).Magnitude or 0
-        if dist < bestDist then bestDist = dist; best = obj end
-    end
-    trackedBall = best
+    trackedBall = best  -- nil if nothing valid in namedBalls (e.g. lobby)
 end
 
 task.spawn(function()
