@@ -47,6 +47,12 @@ local function getRootPart()
     return char and char:FindFirstChild("HumanoidRootPart")
 end
 
+local function isAlive()
+    local char = LocalPlayer.Character
+    local hum  = char and char:FindFirstChildOfClass("Humanoid")
+    return hum ~= nil and hum.Health > 0
+end
+
 -- ── Ball cache ────────────────────────────────────────────────────────────────
 
 local BALL_NAMES  = { ball = true, deathball = true, football = true, soccerball = true }
@@ -145,17 +151,41 @@ local function gaussMs(maxMs)
 end
 
 local consecutiveParries = 0
+local postMissBump       = 0     -- extra miss chance for next N parries after a miss
+local roundPerformance   = 1.0   -- per-round multiplier on miss chance (0.7–1.3)
+local perParryStartupMs  = 0     -- per-parry startup offset, resampled each fire
+
+-- Resample round-level performance — called on each new character / round
+local function resampleRoundPerformance()
+    -- Uniform [0.7, 1.3]: some rounds you play better, some worse
+    roundPerformance = 0.7 + math.random() * 0.6
+end
+
+resampleRoundPerformance()  -- initial sample at load
 
 local function shouldMiss()
     if not Stealth.Enabled then return false end
+
+    -- Forced miss after long streak
     if consecutiveParries >= Stealth.MaxConsecutive then
         consecutiveParries = 0
-        return true   -- forced miss after long streak
-    end
-    if math.random() < Stealth.MissChance then
-        consecutiveParries = 0
+        postMissBump = math.random(1, 3)   -- humans fumble 1–3 more after a streak break
         return true
     end
+
+    -- Base miss chance scaled by round performance + post-miss cluster bump
+    local chance = Stealth.MissChance * roundPerformance
+    if postMissBump > 0 then
+        chance = chance + 0.09             -- elevated ~9% extra while fumbling
+        postMissBump -= 1
+    end
+
+    if math.random() < chance then
+        consecutiveParries = 0
+        postMissBump = math.random(0, 2)   -- might fumble another 0–2 more
+        return true
+    end
+
     return false
 end
 
@@ -168,6 +198,16 @@ end
 local function humanDelay()
     if not Stealth.Enabled or Stealth.JitterMs <= 0 then return 0 end
     return gaussMs(Stealth.JitterMs * 2)
+end
+
+-- Per-parry startup offset: resampled each time we fire, ±15ms
+-- Makes the TTI-at-fire distribution wide and natural rather than a fixed value
+local function resamplePerParryStartup()
+    perParryStartupMs = (math.random(-150, 150)) / 10   -- –15 to +15ms
+end
+
+local function currentParryStartup(base)
+    return base + (perParryStartupMs / 1000)
 end
 
 -- Variable key hold: 38–76ms instead of always 50ms
@@ -247,11 +287,14 @@ task.spawn(function()
 
         if not Settings.AutoParry then continue end
 
+        -- Don't fire inputs while dead (suspicious + useless)
+        if not isAlive() then Stats.TTI = math.huge; continue end
+
         local hrp = getRootPart()
         if not hrp or not ball then Stats.TTI = math.huge; continue end
 
         -- Snapshot settings once per frame to insulate against mid-frame slider changes
-        local parryStartup  = Settings.ParryStartup
+        local parryStartup  = currentParryStartup(Settings.ParryStartup)
         local parryCooldown = effectiveCooldown(Settings.ParryCooldown)
 
         local tti = predictTTI(ball, hrp)
@@ -262,10 +305,12 @@ task.spawn(function()
 
         if onCooldown then
             if Settings.AbilityFailsafe and tti < 0.1 then
-                -- Ability also jittered — instant defensive ability use is suspicious
+                -- Jitter ability press too — instant defensive use is suspicious
                 task.delay(gaussMs(40), function()
-                    pressE()
-                    Stats.AbilitiesUsed += 1
+                    if isAlive() then
+                        pressE()
+                        Stats.AbilitiesUsed += 1
+                    end
                 end)
             end
             continue
@@ -275,21 +320,23 @@ task.spawn(function()
         if tooFastForHuman(tti) then continue end
 
         if tti <= parryStartup then
-            -- Intentional miss check — happens BEFORE marking cooldown so the
-            -- ball still hits and the player looks human
+            -- Intentional miss — happens BEFORE marking cooldown so ball actually hits
             if shouldMiss() then
                 Stats.Misses += 1
                 continue
             end
 
-            -- Pre-mark cooldown so jitter delay doesn't allow a double-fire
+            -- Resample per-parry startup for the NEXT fire (not this one)
+            resamplePerParryStartup()
+
+            -- Pre-mark cooldown so jitter delay can't cause a double-fire
             Stats.LastParryTime = now
 
             local savedLook = hrp.CFrame.LookVector
 
             local function executeParry()
                 local h = getRootPart()
-                if not h then return end
+                if not h or not isAlive() then return end
 
                 if Settings.BallCurve then applyAndRestoreCurve(h, savedLook) end
 
@@ -311,10 +358,11 @@ task.spawn(function()
 end)
 
 -- ── Auto Ready ────────────────────────────────────────────────────────────────
+-- Interval is jittered 0.9–1.8s so it doesn't fire at a machine-regular cadence.
 
 task.spawn(function()
     while true do
-        task.wait(1)
+        task.wait(0.9 + math.random() * 0.9)
         if not Settings.AutoReady then continue end
         pcall(function()
             for _, gui in ipairs(LocalPlayer.PlayerGui:GetDescendants()) do
@@ -348,7 +396,10 @@ LocalPlayer.CharacterAdded:Connect(function(char)
     char:WaitForChild("Humanoid")
     Stats.LastParryTime = 0
     consecutiveParries  = 0
+    postMissBump        = 0
     resetBallHistory()
+    resampleRoundPerformance()   -- each round has different baseline performance
+    resamplePerParryStartup()
 end)
 
 -- ── GUI ───────────────────────────────────────────────────────────────────────
@@ -445,13 +496,14 @@ task.spawn(function()
                 Content = string.format(
                     "FPS: %d   TTI: %s   CD: %s\n"
                  .. "Parries: %d   Misses: %d   Abil: %d\n"
-                 .. "Streak: %d / %d   Stealth: %s\n"
-                 .. "Parry:%s  Fail:%s  Curve:%s  Ready:%s",
+                 .. "Streak: %d/%d   Perf: %.0f%%   Fumble: %d\n"
+                 .. "Stealth:%s  Parry:%s  Fail:%s  Curve:%s",
                     Stats.FPS, ttiStr, cdStr,
                     Stats.Parries, Stats.Misses, Stats.AbilitiesUsed,
-                    consecutiveParries, Stealth.MaxConsecutive, sw(Stealth.Enabled),
-                    sw(Settings.AutoParry), sw(Settings.AbilityFailsafe),
-                    sw(Settings.BallCurve),  sw(Settings.AutoReady)
+                    consecutiveParries, Stealth.MaxConsecutive,
+                    roundPerformance * 100, postMissBump,
+                    sw(Stealth.Enabled), sw(Settings.AutoParry),
+                    sw(Settings.AbilityFailsafe), sw(Settings.BallCurve)
                 ),
             })
         end)
