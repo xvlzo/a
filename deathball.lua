@@ -176,6 +176,7 @@ local postMissBump       = 0     -- extra miss chance for next N parries after a
 local roundPerformance   = 1.0   -- per-round multiplier on miss chance (0.7–1.3)
 local perParryStartupMs  = 0     -- per-parry startup offset, resampled each fire
 local spawnTime          = 0     -- tick() at last respawn, used for warm-up window
+local lastAbilityTime    = 0     -- prevents double-firing ability on successive frames
 
 -- Resample round-level performance — called on each new character / round
 local function resampleRoundPerformance()
@@ -185,15 +186,16 @@ end
 
 -- Extra startup added in the first WarmupSec seconds after spawning.
 -- Simulates a player orienting themselves before full reaction speed.
+-- Capped at 75ms so we never fire parry when ball is unreasonably far away.
 local function warmupExtraMs()
     if not Stealth.Enabled or Stealth.WarmupSec <= 0 then return 0 end
     local elapsed = tick() - spawnTime
     if elapsed >= Stealth.WarmupSec then return 0 end
-    -- Linearly decays from 120ms extra at spawn to 0 at WarmupSec
-    return 120 * (1 - elapsed / Stealth.WarmupSec)
+    return math.min(75, 75 * (1 - elapsed / Stealth.WarmupSec))
 end
 
 resampleRoundPerformance()  -- initial sample at load
+resamplePerParryStartup()   -- so first parry isn't always at 0ms offset
 
 local function shouldMiss()
     if not Stealth.Enabled then return false end
@@ -355,8 +357,9 @@ task.spawn(function()
         local onCooldown = (now - Stats.LastParryTime) < parryCooldown
 
         if onCooldown then
-            if Settings.AbilityFailsafe and tti < Stealth.FailsafeTTI then
-                -- Jitter ability press too — instant defensive use is suspicious
+            local abilityReady = (now - lastAbilityTime) > (Settings.ParryCooldown + 0.3)
+            if Settings.AbilityFailsafe and tti < Stealth.FailsafeTTI and abilityReady then
+                lastAbilityTime = now   -- gate immediately, before the delay fires
                 task.delay(gaussMs(40), function()
                     if isAlive() then
                         pressE()
@@ -410,11 +413,20 @@ end)
 
 -- ── Auto Ready ────────────────────────────────────────────────────────────────
 -- Interval is jittered 0.9–1.8s so it doesn't fire at a machine-regular cadence.
+-- After clicking ready, backs off for 6–10s before trying again — humans click
+-- it once, not every second.
+
+local lastReadyClick = 0
 
 task.spawn(function()
     while true do
         task.wait(0.9 + math.random() * 0.9)
         if not Settings.AutoReady then continue end
+
+        local now = tick()
+        local debounce = 6 + math.random() * 4   -- 6–10s between ready clicks
+        if (now - lastReadyClick) < debounce then continue end
+
         pcall(function()
             for _, gui in ipairs(LocalPlayer.PlayerGui:GetDescendants()) do
                 if gui:IsA("TextButton") or gui:IsA("ImageButton") then
@@ -422,6 +434,7 @@ task.spawn(function()
                     local textHit = gui:IsA("TextButton") and gui.Text:lower():find("ready")
                     if nameHit or textHit then
                         gui:Activate()
+                        lastReadyClick = now
                         break
                     end
                 end
@@ -445,10 +458,12 @@ end)
 
 LocalPlayer.CharacterAdded:Connect(function(char)
     char:WaitForChild("Humanoid")
+    local t             = tick()
     Stats.LastParryTime = 0
+    lastAbilityTime     = 0
     consecutiveParries  = 0
     postMissBump        = 0
-    spawnTime           = tick()
+    spawnTime           = t
     resetBallHistory()
     resampleRoundPerformance()
     resamplePerParryStartup()
