@@ -109,11 +109,16 @@ local function isRealBall(part)
 end
 
 local function getRealBall()
-    local best, bestSz = nil, -1
+    local best, bestScore = nil, -1
     for part in pairs(cachedBalls) do
         if isRealBall(part) then
-            local sz = part.Size.Magnitude
-            if sz > bestSz then best, bestSz = part, sz end
+            -- Primary signal: prefer the ball we're already tracking in history
+            -- (continuity beats size — Gazo's fake appears at a different location)
+            local score = part.Size.Magnitude
+            if lastBallPos and (part.Position - lastBallPos).Magnitude < 12 then
+                score = score + 100
+            end
+            if score > bestScore then best, bestScore = part, score end
         end
     end
     return best
@@ -131,8 +136,19 @@ local function resetBallHistory()
 end
 
 local function pushBallHistory(ball)
-    if lastBallPos and (ball.Position - lastBallPos).Magnitude > 60 then
-        resetBallHistory()
+    if lastBallPos then
+        local delta = ball.Position - lastBallPos
+        -- Large jump: ball re-served or teleported
+        if delta.Magnitude > 60 then
+            resetBallHistory()
+        -- Direction reversal (>120°): ball bounced off another player — flush old
+        -- trajectory so the velocity estimate corrects in 1–2 frames instead of ~8
+        elseif #ballHistory >= 2 and delta.Magnitude > 0.01 then
+            local prev = ballHistory[#ballHistory].pos - ballHistory[math.max(1, #ballHistory-1)].pos
+            if prev.Magnitude > 0.01 and delta.Unit:Dot(prev.Unit) < -0.5 then
+                resetBallHistory()
+            end
+        end
     end
     lastBallPos = ball.Position
     table.insert(ballHistory, { pos = ball.Position, t = tick() })
