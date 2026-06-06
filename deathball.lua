@@ -749,7 +749,7 @@ StealthTab:CreateSlider({
 })
 
 Rayfield:Notify({
-    Title   = "Death Ball Loaded",
+    Title   = "Death Ball  [v8]  Loaded",
     Content = "All systems ready. Stealth ON.",
     Duration = 5,
 })
