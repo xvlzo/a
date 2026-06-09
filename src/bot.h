@@ -1,0 +1,145 @@
+#pragma once
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <atomic>
+#include <thread>
+#include <mutex>
+#include <vector>
+#include <string>
+#include <fstream>
+#include <chrono>
+
+#include "csp_structs.h"
+#include "ac_structs.h"
+#include "spline.h"
+#include "planner.h"
+#include "controller.h"
+#include "wheel_model.h"
+
+// ── Mmap handle wrapper ───────────────────────────────────────────────────────
+struct MmapHandle {
+    HANDLE hMap  = INVALID_HANDLE_VALUE;
+    void*  pView = nullptr;
+    bool   valid = false;
+
+    bool openRead(const char* name, size_t size);
+    bool openReadWrite(const char* name, size_t size);
+    void close();
+    ~MmapHandle() { close(); }
+};
+
+// ── Per-traffic-car runtime state ─────────────────────────────────────────────
+struct TrafficSlot {
+    MmapHandle mmap;
+    CarPublicData data{};
+    bool        active = false;
+    int         idx    = 0;
+};
+
+// ── Planner output (atomic handoff between planning and control threads) ─────
+struct PlanOutput {
+    float target_d   = 0.f;
+    float target_v   = 44.f; // m/s
+    int   close_3x   = 0;
+    int   close_1x   = 0;
+    float plan_dt_ms = 0.f;
+};
+
+// ── Main bot class ─────────────────────────────────────────────────────────────
+class Bot {
+public:
+    struct Config {
+        std::string fast_lane_path = "data/fast_lane.ai";
+        int    own_car_index  = 0;
+        int    max_traffic    = 64;
+        float  control_hz     = 333.f;
+        float  planning_hz    = 144.f;
+        float  traffic_hz     = 60.f;
+        float  target_kph     = 160.f;
+        float  min_kph        = 80.f;
+        float  max_kph        = 220.f;
+        float  safety_margin  = 1.2f;
+        float  humanization   = 0.7f;
+        float  smoothness     = 0.6f;
+        bool   dry_run        = false;
+        std::string log_dir   = "logs";
+        int    udp_port       = 27015; // Lua overlay comms
+    };
+
+    explicit Bot(const Config& cfg);
+    ~Bot();
+
+    bool init();
+    void run();    // blocks until stop() called
+    void stop();
+
+private:
+    Config cfg_;
+    Spline spline_;
+
+    // Mmaps
+    MmapHandle own_car_mm_;     // Car<N>.v0
+    MmapHandle own_ctrl_mm_;    // CarControls<N>.v0
+    MmapHandle physics_mm_;     // acpmf_physics (fallback)
+    MmapHandle graphics_mm_;    // acpmf_graphics (traffic fallback)
+    MmapHandle settings_mm_;    // BotSettings.v0 (from Lua overlay)
+    MmapHandle status_mm_;      // BotStatus.v0   (to Lua overlay)
+
+    std::vector<TrafficSlot> traffic_slots_;
+
+    // Settings (live, updated from mmap)
+    BotSettings settings_{};
+    BotStatus   status_{};
+
+    // Planner + controller
+    std::unique_ptr<FrenetPlanner>    planner_;
+    std::unique_ptr<StanleyController> controller_;
+    std::unique_ptr<WheelModel>        wheel_;
+
+    // Atomic plan handoff (planning → control)
+    std::mutex         plan_mutex_;
+    PlanOutput         latest_plan_{};
+
+    // State
+    std::atomic<bool>  running_{ false };
+    std::thread        plan_thread_;
+    std::thread        hotkey_thread_;
+
+    // Logger
+    std::ofstream      log_file_;
+    std::mutex         log_mutex_;
+    int                passes_3x_total_ = 0;
+    int                passes_1x_total_ = 0;
+
+    // UDP socket for Lua overlay
+    SOCKET udp_sock_ = INVALID_SOCKET;
+
+    // ── Thread entry points ──────────────────────────────────────────────────
+    void controlLoop();   // 333 Hz, own thread
+    void planningLoop();  // 144 Hz, plan_thread_
+    void hotkeyLoop();    // polls hotkeys, hotkey_thread_
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+    bool openMmaps();
+    bool openTrafficMmaps();
+    void readSettings();
+    void writeStatus();
+    void logFrame(const WheelOutput& out, const ControlDemand& raw, float dt_ms);
+    void initUDP();
+    void tickUDP();
+    void openLogFile();
+
+    // Read own car state (prefer CSP Car.v0, fallback acpmf_physics)
+    bool readOwnCar(float& px, float& pz, float& heading,
+                    float& speed_ms, float& spline_pos);
+
+    // Read + project traffic into Frenet
+    std::vector<TrafficCar> readTraffic();
+
+    // Write control output (CarControls mmap)
+    void writeControls(const WheelOutput& out);
+
+    // Check for collision event (any traffic car too close)
+    bool collisionDetected(const std::vector<TrafficCar>& traffic,
+                           float ego_d);
+};

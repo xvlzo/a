@@ -1,138 +1,155 @@
-# No Hesi Bot — Setup Guide
+# No Hesi Bot — Setup
 
 ## Prerequisites
 
-- Windows 10/11 (64-bit)
+- Windows 10/11 64-bit
 - Assetto Corsa (Steam)
-- Custom Shaders Patch (CSP) v0.2.x or later
-- Python 3.10+ (64-bit) — **must be 64-bit**
+- Custom Shaders Patch (CSP) v0.2.x+
+- Visual Studio 2022 (Community is fine) with C++ workload
+- CMake 3.20+
 
 ---
 
 ## 1. Enable CSP Custom AI
 
-**`assettocorsa/extension/config/new_behaviour.ini`** — create if it doesn't exist:
+**`assettocorsa/extension/config/new_behaviour.ini`** (create if missing):
 ```ini
 [CUSTOM_AI]
 ENABLED=1
 ```
 
-**Track surfaces.ini** (for Shutoko Revival Project — or whichever No Hesi track):
-Find the file at `assettocorsa/content/tracks/shuto_revival_project_beta/data/surfaces.ini`
-Add this section:
+**Track surfaces.ini** — for Shutoko Revival Project:
+```
+assettocorsa/content/tracks/shuto_revival_project_beta/data/surfaces.ini
+```
+Add:
 ```ini
 [_EXTRA_PERMISSIONS]
 ALLOW_CUSTOM_AI_MANIPULATION=1
 ```
 
-> Without this the bot cannot write control commands.
-
 ---
 
 ## 2. Get the track spline
 
-Copy `fast_lane.ai` from the track's AI folder:
+Copy fast_lane.ai from the SRP track folder:
 ```
 assettocorsa/content/tracks/shuto_revival_project_beta/ai/fast_lane.ai
 ```
-Place it at:
-```
-<repo>/data/fast_lane.ai
-```
+→ place at `<repo>/data/fast_lane.ai`
 
-The SRP AI splines can also be downloaded from OverTake.gg (ID 61359) or
-the SRP Discord `#ai-spline-releases` channel — use the fastest spline available.
+Or download the optimised SRP AI splines from OverTake.gg (ID 61359).
 
 ---
 
-## 3. Install Python dependencies
+## 3. Build
 
-```bash
-pip install numpy scipy
+```bat
+cmake -B build -G "Visual Studio 17 2022" -A x64
+cmake --build build --config Release
 ```
 
-Optional (only needed if CSP Custom AI is unavailable — fallback gamepad emulation):
-```bash
-pip install vgamepad
-```
-Also install [ViGEmBus driver](https://github.com/ViGEm/ViGEmBus/releases) if using vgamepad.
+Binary at `build/Release/nohesi_bot.exe`.
 
 ---
 
-## 4. Run the bot
+## 4. Install Lua overlay
 
-Start Assetto Corsa, load a No Hesi server, wait until you're on track, then:
-
-```bash
-python main.py
+Copy `lua/nohesi_bot/` to:
+```
+assettocorsa/apps/lua/nohesi_bot/
 ```
 
+Enable it in AC's app list (right side of screen in-game).
+
+---
+
+## 5. Run
+
+Start AC, join a No Hesi server, wait until on track, then:
+
+```bat
+build\Release\nohesi_bot.exe --fast-lane data\fast_lane.ai
+```
+
+The bot starts **disabled**. Press **F5** to enable.
+
+```
 Options:
-```
---dry-run        Compute trajectories but don't write any controls
---hz 333         Control loop rate (default: 333)
---target-kph 160 Target cruise speed (default: 160)
---fast-lane path/to/fast_lane.ai
-```
-
----
-
-## 5. How it works
-
-```
-┌─ 60 Hz: Planning thread ─────────────────────────────────┐
-│  Read all traffic car positions (CarPublic mmaps)         │
-│  Project to Frenet (s, d) coordinates                     │
-│  Find driveable gaps in traffic                           │
-│  Generate ~200-500 candidate trajectories (quintic poly)  │
-│  Filter: reject any within 1.5m of a traffic car          │
-│  Score: reward close passes (≤4m = 3x, ≤7m = 1x)         │
-│  Output: target_d (lateral offset), target_v (speed)      │
-└─────────────────────────────────────────────────────────┘
-          ↓ (shared state, thread-safe)
-┌─ 333 Hz: Control thread ─────────────────────────────────┐
-│  Read own car state (Car0 mmap / AC shared memory)        │
-│  Stanley controller: compute steer from target_d + CTE    │
-│  PID: compute throttle/brake from target_v                │
-│  Write to CarControls0 mmap → CSP drives the car         │
-└─────────────────────────────────────────────────────────┘
-          ↓ (async queue)
-┌─ Async: Logger thread ───────────────────────────────────┐
-│  JSON-lines log → logs/session_<timestamp>.jsonl          │
-│  Records every frame: steer, throttle, proximity events   │
-│  Post-session: score_session() reports pass efficiency    │
-└─────────────────────────────────────────────────────────┘
+  --target-kph 160     Cruise speed
+  --humanization 0.7   Wheel-like feel (0=robotic, 1=very human)
+  --smoothness 0.6     Wheel weight (0=direct, 1=heavy GT)
+  --safety 1.2         Hard collision buffer (m)
+  --dry-run            Compute only, no output
 ```
 
 ---
 
-## 6. Tuning
+## 6. In-game overlay
 
-All tunable parameters are in `config.py`. Key ones to adjust:
+The CSP Lua app shows:
 
-| Parameter | Default | Effect |
-|-----------|---------|--------|
-| `speed.target_kph` | 160 | Cruise speed |
-| `scoring.safety_margin_m` | 1.2 | Hard collision buffer (reduce with caution) |
-| `scoring.target_pass_dist_m` | 3.0 | Aim for this edge-to-edge clearance on passes |
-| `control.stanley_ke` | 2.5 | Lateral tracking aggressiveness |
-| `control.speed_kp` | 0.06 | Speed PID proportional gain |
-| `planner.w_close_pass` | 8.0 | How much to reward close passes in trajectory scoring |
-| `planner.min_gap_size_m` | 3.5 | Minimum gap width the planner will attempt |
+```
+┌─ NO HESI BOT  [ON] ──────────────┐
+│ Speed   :  158.3 kph              │
+│ Target  :  160.0 kph              │
+│ Offset d:  +0.42 m                │
+│ 3x passes: 14   1x: 8             │
+├───────────────────────────────────┤
+│  [  Disable Bot [F5]  ]           │
+│  Human  ████░░ 70%                │
+│  Smooth ██████ 60%                │
+│  Speed kph  ───────■── 160        │
+└───────────────────────────────────┘
+```
 
-After each run, check `logs/session_*.jsonl` or call:
-```python
-from src.logger.session_logger import SessionLogger
-# scores printed at shutdown automatically
+**Hotkeys** (work both inside AC and in the bot console window):
+| Key | Action |
+|-----|--------|
+| F5  | Toggle bot on/off |
+| F6  | Humanization +10% |
+| F7  | Humanization -10% |
+| F8  | Target speed +10 kph |
+| F9  | Target speed -10 kph |
+
+---
+
+## 7. Architecture
+
+```
+333 Hz — Control thread (main)
+  Read Car0.v0 mmap (CSP) → position, heading, speed
+  Stanley lateral controller → desired steer
+  PID longitudinal → throttle/brake
+  WheelModel: spring-damper + OU noise + reaction delay → humanized output
+  Write CarControls0.v0 (CSP) → game drives the car
+
+144 Hz — Planning thread
+  Read CarPublic<N>.v0 mmaps → traffic positions
+  Project all to Frenet (s, d) coordinates
+  Werling quintic trajectories × 200-500 candidates
+  Hard filter: reject if < safety_margin from any traffic
+  Soft score: progress + speed + 3x/1x close-pass reward - jerk
+  Atomic write: target_d, target_v → control thread
+
+UDP — Lua overlay
+  Bot sends status every ~200ms to 127.0.0.1:27015
+  Overlay sends slider changes back immediately
 ```
 
 ---
 
-## 7. Score inference
+## 8. Tuning guide
 
-The bot tracks its own proximity events (no screen-reading needed).
-A "3x pass" is logged whenever the bot's edge-to-edge clearance to a traffic car
-it is passing drops below `scoring.close_3x_m` (default 4m).
+After each run, check `logs/session_*.jsonl`. Key fields:
+- `cte`: cross-track error — if consistently > 0.3m, increase `stanley_ke`
+- `dt`: loop time in ms — should stay < 3ms (333 Hz budget)
+- Proximity events tracked in planning thread close-pass counters
 
-For ground-truth validation, compare inferred pass counts with the on-screen HUD.
-If they diverge, adjust `close_3x_m`/`close_1x_m` to match the server's thresholds.
+| Want | Adjust |
+|------|--------|
+| More 3x passes | Reduce `--safety` (1.0 minimum) |
+| Less oscillation | Increase `--smoothness` |
+| Slower reaction | Increase `--humanization` |
+| Higher top speed | Increase `--target-kph` |
+| Tighter line | Reduce `stanley_ke` in controller.cpp |
