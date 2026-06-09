@@ -1,0 +1,6 @@
+numpy>=1.24
+scipy>=1.11
+# vgamepad is an optional fallback; requires ViGEm Bus Driver on Windows
+# vgamepad>=0.1.0
+# pywin32 provides ctypes.WinDLL on Windows (usually already present)
+# pywin32>=306
