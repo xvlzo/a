@@ -364,9 +364,12 @@ void Bot::planningLoop() {
         const float cur_safety_m    = live_safety_margin_.load();
         float target_v = cur_target_kph / 3.6f;
         {
-            const float ego_hw = planner_->config().ego_half_w;
+            const float ego_hw   = planner_->config().ego_half_w;
+            const float ego_s    = planner_->egoS();
+            const float track_len = spline_.total_length;
             for (auto& tc : traffic) {
-                float rel_s = tc.s0 - planner_->egoS();
+                float rel_s = tc.s0 - ego_s;
+                if (rel_s < 0.f) rel_s += track_len;  // wrap
                 if (rel_s > 0.f && rel_s < 30.f) {
                     float lat = std::abs(planner_->egoD() - tc.d0) - ego_hw - tc.half_w;
                     if (lat < cur_safety_m + 1.f)
@@ -397,9 +400,14 @@ void Bot::planningLoop() {
             const auto& pc  = planner_->config();
             const float es  = planner_->egoS();
             const float ed  = planner_->egoD();
+            const float track_len = spline_.total_length;
             for (auto& tc : traffic) {
                 if (tc.car_idx < 0 || tc.car_idx >= 64) continue;
-                bool still_behind = (es < tc.s0 + tc.half_l);
+                // Circular comparison: ds > 0 means traffic rear is still ahead of ego
+                float ds = (tc.s0 + tc.half_l) - es;
+                if (ds >  track_len * 0.5f) ds -= track_len;
+                if (ds < -track_len * 0.5f) ds += track_len;
+                bool still_behind = (ds > 0.f);
                 if (car_was_behind_[tc.car_idx] && !still_behind) {
                     float lat = std::abs(ed - tc.d0) - tc.half_w - pc.ego_half_w;
                     if      (lat > 0.f && lat <= pc.close_3x_m) ++passes_3x_total_;

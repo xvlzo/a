@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <chrono>
+#include <mutex>
 
 // Frenet-frame trajectory planner (Werling 2010).
 //
@@ -99,8 +100,8 @@ struct PlannerConfig {
 class FrenetPlanner {
 public:
     explicit FrenetPlanner(const Spline& spline);
-    void setConfig(const PlannerConfig& cfg) { cfg_ = cfg; }
-    const PlannerConfig& config() const { return cfg_; }
+    void setConfig(const PlannerConfig& cfg);
+    PlannerConfig config() const;
 
     // Update ego Frenet state (call before plan())
     void updateEgo(float wx, float wz, float speed_ms, float heading, int hint_idx);
@@ -117,7 +118,12 @@ public:
 
 private:
     const Spline& spline_;
-    PlannerConfig cfg_;
+
+    // cfg_ is the working copy: only ever written by the planning thread at the
+    // top of plan(). cfg_pending_ is the cross-thread handoff (mutex-protected).
+    mutable std::mutex cfg_mutex_;
+    PlannerConfig      cfg_pending_{};
+    PlannerConfig      cfg_{};
 
     float ego_s_  = 0.f;
     float ego_d_  = 0.f;

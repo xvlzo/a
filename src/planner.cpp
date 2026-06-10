@@ -93,6 +93,16 @@ float QuarticPoly::dds(float t) const {
 // ── FrenetPlanner ─────────────────────────────────────────────────────────────
 FrenetPlanner::FrenetPlanner(const Spline& spline) : spline_(spline) {}
 
+void FrenetPlanner::setConfig(const PlannerConfig& c) {
+    std::lock_guard<std::mutex> lk(cfg_mutex_);
+    cfg_pending_ = c;
+}
+
+PlannerConfig FrenetPlanner::config() const {
+    std::lock_guard<std::mutex> lk(cfg_mutex_);
+    return cfg_pending_;
+}
+
 static float wrapAngle(float a) {
     while (a >  3.14159f) a -= 6.28318f;
     while (a < -3.14159f) a += 6.28318f;
@@ -233,6 +243,8 @@ float FrenetPlanner::scoreTrajectory(Trajectory& traj,
 
 Trajectory FrenetPlanner::plan(const std::vector<TrafficCar>& traffic,
                                 float target_speed_ms) {
+    { std::lock_guard<std::mutex> lk(cfg_mutex_); cfg_ = cfg_pending_; }
+
     float T_variants[] = { 2.5f, 3.0f, 3.5f, 4.0f };
     float v_min = std::max(cfg_.min_kph / 3.6f, target_speed_ms - 20.f);
     float v_max = target_speed_ms + 5.f;
