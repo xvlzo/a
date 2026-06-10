@@ -350,12 +350,15 @@ void Bot::planningLoop() {
         const float cur_target_kph  = live_target_kph_.load();
         const float cur_safety_m    = live_safety_margin_.load();
         float target_v = cur_target_kph / 3.6f;
-        for (auto& tc : traffic) {
-            float rel_s = tc.s0 - planner_->egoS();
-            if (rel_s > 0.f && rel_s < 30.f) {
-                float lat = std::abs(planner_->egoD() - tc.d0) - 0.95f - tc.half_w;
-                if (lat < cur_safety_m + 1.f)
-                    target_v = std::min(target_v, cfg_.min_kph / 3.6f + 10.f);
+        {
+            const float ego_hw = planner_->config().ego_half_w;
+            for (auto& tc : traffic) {
+                float rel_s = tc.s0 - planner_->egoS();
+                if (rel_s > 0.f && rel_s < 30.f) {
+                    float lat = std::abs(planner_->egoD() - tc.d0) - ego_hw - tc.half_w;
+                    if (lat < cur_safety_m + 1.f)
+                        target_v = std::min(target_v, cfg_.min_kph / 3.6f + 10.f);
+                }
             }
         }
 
@@ -369,15 +372,16 @@ void Bot::planningLoop() {
         // Detect actual passes: count only when ego transitions from behind to ahead of a car.
         // This avoids the ~100-200x overcount from scoring the same future pass every frame.
         {
-            const float es = planner_->egoS();
-            const float ed = planner_->egoD();
+            const auto& pc  = planner_->config();
+            const float es  = planner_->egoS();
+            const float ed  = planner_->egoD();
             for (auto& tc : traffic) {
                 if (tc.car_idx < 0 || tc.car_idx >= 64) continue;
                 bool still_behind = (es < tc.s0 + tc.half_l);
                 if (car_was_behind_[tc.car_idx] && !still_behind) {
-                    float lat = std::abs(ed - tc.d0) - tc.half_w - 0.95f;
-                    if      (lat > 0.f && lat <= 4.f) ++passes_3x_total_;
-                    else if (lat > 0.f && lat <= 7.f) ++passes_1x_total_;
+                    float lat = std::abs(ed - tc.d0) - tc.half_w - pc.ego_half_w;
+                    if      (lat > 0.f && lat <= pc.close_3x_m) ++passes_3x_total_;
+                    else if (lat > 0.f && lat <= pc.close_1x_m) ++passes_1x_total_;
                 }
                 car_was_behind_[tc.car_idx] = still_behind;
             }
