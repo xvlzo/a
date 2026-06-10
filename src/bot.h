@@ -143,6 +143,7 @@ private:
     // ── Helpers ──────────────────────────────────────────────────────────────
     bool openMmaps();
     bool openTrafficMmaps();
+    void verifyMmaps(); // polls packet_id to confirm CSP is writing, sanity-checks fields
     void readSettings();
     void writeStatus();
     void logFrame(const WheelOutput& out, const ControlDemand& raw, float dt_ms);

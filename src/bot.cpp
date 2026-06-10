@@ -76,6 +76,7 @@ bool Bot::init() {
     live_safety_margin_.store(cfg_.safety_margin);
 
     if (!openMmaps()) return false;
+    verifyMmaps();
     openLogFile();
     initUDP();
 
@@ -148,6 +149,61 @@ bool Bot::openTrafficMmaps() {
     }
     printf("[Bot] Traffic slots: %d opened\n", opened);
     return opened > 0;
+}
+
+// ─── Mmap verification ───────────────────────────────────────────────────────
+void Bot::verifyMmaps() {
+    if (!own_car_mm_.valid) {
+        // Running in fallback mode — nothing CSP-specific to verify
+        printf("[Bot] Skipping CSP mmap verification (Car.v0 not open)\n");
+        return;
+    }
+
+    const auto* d = static_cast<const CarData*>(own_car_mm_.pView);
+
+    // Poll packet_id for up to 2 s — it increments every physics tick (~333 Hz)
+    printf("[Bot] Waiting for CSP to start writing Car%d.v0...\n", cfg_.own_car_index);
+    int32_t id0 = d->packet_id;
+    bool advancing = false;
+    for (int i = 0; i < 200; ++i) {   // 200 × 10 ms = 2 s
+        Sleep(10);
+        if (d->packet_id != id0) { advancing = true; break; }
+    }
+
+    if (!advancing) {
+        printf("[Bot] WARNING: CarData.packet_id never advanced after 2 s.\n"
+               "              Is CSP Custom AI enabled? Is AC running and loaded?\n");
+        // Don't abort — user can see the warning and decide
+        return;
+    }
+
+    // packet_id is moving; now sanity-check the data fields
+    bool ok = true;
+
+    if (d->speed_kmh < 0.f || d->speed_kmh > 400.f) {
+        printf("[Bot] WARNING: speed_kmh = %.1f — out of range [0, 400]."
+               " Struct layout mismatch?\n", d->speed_kmh);
+        ok = false;
+    }
+
+    float lx = d->look.x, ly = d->look.y, lz = d->look.z;
+    float look_mag = std::sqrt(lx*lx + ly*ly + lz*lz);
+    if (look_mag < 0.9f || look_mag > 1.1f) {
+        printf("[Bot] WARNING: look vector magnitude = %.3f — expected ~1.0."
+               " Struct layout mismatch?\n", look_mag);
+        ok = false;
+    }
+
+    if (d->spline_position < 0.f || d->spline_position > 1.f) {
+        printf("[Bot] WARNING: spline_position = %.4f — out of range [0, 1]."
+               " Struct layout mismatch?\n", d->spline_position);
+        ok = false;
+    }
+
+    if (ok)
+        printf("[Bot] CSP mmap sanity OK (packet_id advancing, fields plausible)\n");
+    else
+        printf("[Bot] One or more CSP mmap fields look wrong — proceed with caution.\n");
 }
 
 // ─── Run ──────────────────────────────────────────────────────────────────────
