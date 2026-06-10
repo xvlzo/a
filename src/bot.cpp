@@ -333,7 +333,7 @@ void Bot::controlLoop() {
         default:
             status_.active     = false;
             status_.speed_kph  = speed_ms * 3.6f;
-            status_.target_kph = settings_.target_kph;
+            status_.target_kph = live_target_kph_.load();
             break;
         }
 
@@ -512,18 +512,15 @@ bool Bot::readOwnCar(float& px, float& pz, float& heading,
         spline_pos = d->spline_position;
         return true;
     }
-    if (physics_mm_.valid) {
+    if (physics_mm_.valid && graphics_mm_.valid) {
         auto* p = static_cast<const SPageFilePhysics*>(physics_mm_.pView);
+        auto* g = static_cast<const SPageFileGraphic*>(graphics_mm_.pView);
         heading  = p->heading;
         speed_ms = p->speedKmh / 3.6f;
-        // Estimate world position from normalizedCarPosition + spline
-        if (graphics_mm_.valid) {
-            auto* g = static_cast<const SPageFileGraphic*>(graphics_mm_.pView);
-            float norm = g->normalizedCarPosition;
-            float est_s = norm * spline_.total_length;
-            spline_.frenetToWorld(est_s, 0.f, px, pz);
-            spline_pos = norm;
-        }
+        float norm = g->normalizedCarPosition;
+        float est_s = norm * spline_.total_length;
+        spline_.frenetToWorld(est_s, 0.f, px, pz);
+        spline_pos = norm;
         return true;
     }
     return false;
@@ -686,7 +683,7 @@ void Bot::tickUDP() {
                      reinterpret_cast<sockaddr*>(&recv_from), &rflen);
     if (n > 0) {
         lua_from      = recv_from;
-        lua_from_len  = rflen;
+        lua_from_len  = std::min(rflen, (int)sizeof(lua_from));
         lua_connected = true;
         buf[n] = '\0';
         // Simple key=value protocol: "enabled=1", "hum=0.8", "speed=170"

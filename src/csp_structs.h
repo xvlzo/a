@@ -146,6 +146,8 @@ struct BotSettings {
     float   target_pass_dist_m;  // 32  aim clearance when weaving
 };
 
+static_assert(sizeof(BotSettings) == 36, "BotSettings layout changed");
+
 // ── BotStatus  — written by bot, read by Lua overlay ──────────────────────
 struct BotStatus {
     bool    active;
@@ -160,5 +162,7 @@ struct BotStatus {
     float   loop_dt_ms;
     float   plan_dt_ms;
 };
+
+static_assert(sizeof(BotStatus) == 40, "BotStatus layout changed");
 
 #pragma pack(pop)
