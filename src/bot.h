@@ -130,6 +130,7 @@ private:
     std::mutex         log_mutex_;
     std::atomic<int>   passes_3x_total_{ 0 };
     std::atomic<int>   passes_1x_total_{ 0 };
+    bool car_was_behind_[64]{};  // per-car_idx: true = ego hasn't yet passed this car
 
     // UDP socket for Lua overlay
     SOCKET udp_sock_ = INVALID_SOCKET;

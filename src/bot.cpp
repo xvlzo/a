@@ -39,6 +39,7 @@ Bot::Bot(const Config& cfg) : cfg_(cfg) {
     planner_    = std::make_unique<FrenetPlanner>(spline_);
     controller_ = std::make_unique<StanleyController>(spline_);
     wheel_      = std::make_unique<WheelModel>();
+    std::fill(std::begin(car_was_behind_), std::end(car_was_behind_), true);
 }
 
 Bot::~Bot() { stop(); }
@@ -230,6 +231,7 @@ void Bot::controlLoop() {
                     printf("[Bot] Collision! Returning to pits — score reset\n");
                     passes_3x_total_.store(0);
                     passes_1x_total_.store(0);
+                    std::fill(std::begin(car_was_behind_), std::end(car_was_behind_), true);
                     is_active_ = false;
                     state_ = BotState::CRASHED;
                     crashed_timer_ = 0.f;
@@ -364,9 +366,22 @@ void Bot::planningLoop() {
         float plan_ms = static_cast<float>(
             (t1.QuadPart - t0.QuadPart) * 1000.0 / timer.freqQpc());
 
-        // Commit pass counts (atomic — safe across threads)
-        passes_3x_total_ += traj.close_3x;
-        passes_1x_total_ += traj.close_1x;
+        // Detect actual passes: count only when ego transitions from behind to ahead of a car.
+        // This avoids the ~100-200x overcount from scoring the same future pass every frame.
+        {
+            const float es = planner_->egoS();
+            const float ed = planner_->egoD();
+            for (auto& tc : traffic) {
+                if (tc.car_idx < 0 || tc.car_idx >= 64) continue;
+                bool still_behind = (es < tc.s0 + tc.half_l);
+                if (car_was_behind_[tc.car_idx] && !still_behind) {
+                    float lat = std::abs(ed - tc.d0) - tc.half_w - 0.95f;
+                    if      (lat > 0.f && lat <= 4.f) ++passes_3x_total_;
+                    else if (lat > 0.f && lat <= 7.f) ++passes_1x_total_;
+                }
+                car_was_behind_[tc.car_idx] = still_behind;
+            }
+        }
 
         PlanOutput out;
         out.target_d   = traj.target_d;
