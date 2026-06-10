@@ -97,9 +97,13 @@ The CSP Lua app shows:
 │ 3x passes: 14   1x: 8             │
 ├───────────────────────────────────┤
 │  [  Disable Bot [F5]  ]           │
-│  Human  ████░░ 70%                │
-│  Smooth ██████ 60%                │
+│  Human      ████░░ 70%            │
+│  Smooth     ██████ 60%            │
 │  Speed kph  ───────■── 160        │
+├───────────────────────────────────┤
+│  3x gap m   ──■───── 4.0          │
+│  1x gap m   ────■─── 7.0          │
+│  Pass dist  ───■──── 3.0          │
 └───────────────────────────────────┘
 ```
 
@@ -148,7 +152,9 @@ After each run, check `logs/session_*.jsonl`. Key fields:
 
 | Want | Adjust |
 |------|--------|
-| More 3x passes | Reduce `--safety` (1.0 minimum) |
+| More 3x passes | Reduce `--safety` (1.0 minimum), reduce **3x gap** slider |
+| More 1x passes | Increase **1x gap** slider |
+| Closer weave | Reduce **Pass dist** slider (default 3.0 m clearance) |
 | Less oscillation | Increase `--smoothness` |
 | Slower reaction | Increase `--humanization` |
 | Higher top speed | Increase `--target-kph` |
