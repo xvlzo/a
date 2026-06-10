@@ -157,61 +157,145 @@ void Bot::stop() {
 void Bot::controlLoop() {
     setRealtimePriority();
     LoopTimer timer(cfg_.control_hz);
+    const float dt = 1.f / cfg_.control_hz;
 
     float px = 0, pz = 0, heading = 0, speed_ms = 0, spline_pos = 0;
 
     while (running_) {
         timer.beginFrame();
 
-        // Read settings from mmap (Lua may have updated them)
         readSettings();
-
-        // Read own state
         readOwnCar(px, pz, heading, speed_ms, spline_pos);
 
-        // Get latest plan
+        // Read pit state
+        bool in_pit_lane = false, in_pit = false;
+        if (graphics_mm_.valid) {
+            auto* g = static_cast<const SPageFileGraphic*>(graphics_mm_.pView);
+            in_pit_lane = g->isInPitLane != 0;
+            in_pit      = g->isInPit     != 0;
+        }
+
+        // ── F5 enable: pick starting state ──────────────────────────────────
+        if (settings_.enabled && state_ == BotState::DISABLED) {
+            if (in_pit_lane || in_pit) {
+                state_ = BotState::PIT_EXIT;
+                pit_exit_timer_ = 0.f;
+                wheel_->reset();
+                printf("[Bot] Starting from pits — driving to track\n");
+            } else {
+                state_ = BotState::ACTIVE;
+                is_active_ = true;
+                wheel_->reset();
+                controller_->reset();
+                last_collision_counter_ = 0;
+                printf("[Bot] ENABLED\n");
+            }
+        }
+
+        // ── F5 disable: abort everything ────────────────────────────────────
+        if (!settings_.enabled && state_ != BotState::DISABLED) {
+            state_ = BotState::DISABLED;
+            is_active_ = false;
+            if (!cfg_.dry_run) writeControls({0.f, 0.f, 0.f});
+            printf("[Bot] DISABLED\n");
+        }
+
         PlanOutput plan;
         { std::lock_guard<std::mutex> lk(plan_mutex_); plan = latest_plan_; }
 
         WheelOutput wheel_out{};
 
-        if (settings_.enabled) {
-            float target_v = plan.target_v;
-            float target_d = plan.target_d;
+        switch (state_) {
 
-            // Compute raw control demand (Stanley + PID)
+        // ── ACTIVE: full planner + Stanley + wheel model ─────────────────────
+        case BotState::ACTIVE: {
+            if (own_car_mm_.valid) {
+                auto* d = static_cast<const CarData*>(own_car_mm_.pView);
+                if (d->collision_counter != last_collision_counter_
+                    && d->collision_depth > 0.05f) {
+                    printf("[Bot] Collision! Returning to pits — score reset\n");
+                    passes_3x_total_.store(0);
+                    passes_1x_total_.store(0);
+                    is_active_ = false;
+                    state_ = BotState::CRASHED;
+                    crashed_timer_ = 0.f;
+                    break;
+                }
+                last_collision_counter_ = d->collision_counter;
+            }
+
             ControlDemand raw = controller_->update(
                 px, pz, heading, speed_ms,
-                target_d, target_v, 1.f / cfg_.control_hz,
+                plan.target_d, plan.target_v, dt,
                 controller_->lastHintIdx());
 
-            // Humanize through wheel model
-            wheel_out = wheel_->process(raw.steer, raw.throttle, raw.brake,
-                                        1.f / cfg_.control_hz);
+            wheel_out = wheel_->process(raw.steer, raw.throttle, raw.brake, dt);
 
-            if (!cfg_.dry_run)
-                writeControls(wheel_out);
-
-            // Log at ~33 Hz
             float frame_ms = static_cast<float>(timer.frameElapsed() * 1000.0);
             logFrame(wheel_out, raw, frame_ms);
 
-            // Update status (all writes from control thread — no data race)
             status_.active          = true;
             status_.speed_kph       = speed_ms * 3.6f;
-            status_.target_kph      = target_v * 3.6f;
-            status_.target_d        = target_d;
-            status_.ego_d           = plan.ego_d;   // from plan handoff, not planner directly
+            status_.target_kph      = plan.target_v * 3.6f;
+            status_.target_d        = plan.target_d;
+            status_.ego_d           = plan.ego_d;
             status_.cross_track_err = raw.cte;
             status_.passes_3x       = passes_3x_total_.load();
             status_.passes_1x       = passes_1x_total_.load();
             status_.plan_dt_ms      = plan.plan_dt_ms;
-        } else {
-            status_.active = false;
+            break;
+        }
+
+        // ── CRASHED: hard brake → teleport → wait for pit box ────────────────
+        case BotState::CRASHED:
+            crashed_timer_ += dt;
+            if (crashed_timer_ < 0.2f) {
+                wheel_out = {0.f, 0.f, 1.f};          // hard brake
+            } else if (crashed_timer_ < 0.4f) {
+                triggerTeleportToPits();               // sets teleport_to=1 next writeControls
+                wheel_out = {0.f, 0.f, 0.f};
+            }
+            // else hold idle while game places us in pit box (~2-3s total)
+            if (crashed_timer_ > 3.0f) {
+                state_ = BotState::PIT_EXIT;
+                pit_exit_timer_ = 0.f;
+                wheel_->reset();
+                printf("[Bot] In pit box — driving out\n");
+            }
+            status_.active    = false;
+            status_.speed_kph = speed_ms * 3.6f;
+            break;
+
+        // ── PIT_EXIT: gentle throttle until clear of pit lane ────────────────
+        case BotState::PIT_EXIT:
+            pit_exit_timer_ += dt;
+            wheel_out = drivePitExit(speed_ms, dt);
+
+            if (pit_exit_timer_ > 30.f
+                || (!in_pit_lane && !in_pit && speed_ms > 8.f && pit_exit_timer_ > 4.f)) {
+                state_ = BotState::ACTIVE;
+                is_active_ = true;
+                wheel_->reset();
+                controller_->reset();
+                last_collision_counter_ = 0;
+                printf("[Bot] Clear of pit lane — ACTIVE\n");
+            }
+            status_.active    = false;
+            status_.speed_kph = speed_ms * 3.6f;
+            break;
+
+        // ── DISABLED: idle ───────────────────────────────────────────────────
+        case BotState::DISABLED:
+        default:
+            status_.active    = false;
             status_.speed_kph = speed_ms * 3.6f;
             wheel_->reset();
             controller_->reset();
+            break;
         }
+
+        if (!cfg_.dry_run && state_ != BotState::DISABLED)
+            writeControls(wheel_out);
 
         status_.loop_dt_ms = static_cast<float>(timer.frameElapsed() * 1000.0);
         writeStatus();
@@ -229,7 +313,9 @@ void Bot::planningLoop() {
     while (running_) {
         timer.beginFrame();
 
-        if (!settings_.enabled) { timer.endFrame(); continue; }
+        // Only run full planning when on-track and ACTIVE
+        // (avoids garbage Frenet projections while car is in pit lane)
+        if (!is_active_) { timer.endFrame(); continue; }
 
         float px = 0, pz = 0, heading = 0, speed_ms = 0, spline_pos = 0;
         readOwnCar(px, pz, heading, speed_ms, spline_pos);
@@ -239,13 +325,6 @@ void Bot::planningLoop() {
 
         // Read + project traffic
         auto traffic = readTraffic();
-
-        // Collision detection — if hit, reset accumulated score
-        if (collisionDetected(traffic, planner_->egoD())) {
-            passes_3x_total_.store(0);
-            passes_1x_total_.store(0);
-            printf("[Bot] Collision detected — score reset!\n");
-        }
 
         // Adapt speed for tight gaps
         float target_v = cfg_.target_kph / 3.6f;
@@ -401,6 +480,21 @@ std::vector<TrafficCar> Bot::readTraffic() {
     return result;
 }
 
+// ─── Pit helpers ──────────────────────────────────────────────────────────────
+WheelOutput Bot::drivePitExit(float speed_ms, float dt) {
+    // Target 40 kph through the pit lane — well under the 60 kph limit
+    const float target_ms = 40.f / 3.6f;
+    float err      = target_ms - speed_ms;
+    float throttle = std::clamp(err * 0.6f, 0.f, 0.5f);
+    float brake    = (speed_ms > target_ms + 2.f) ? 0.3f : 0.f;
+    // Neutral steer (car is correctly oriented after teleport / normal pit spawn)
+    return wheel_->process(0.f, throttle, brake, dt);
+}
+
+void Bot::triggerTeleportToPits() {
+    teleport_pending_ = true;
+}
+
 // ─── Write controls ────────────────────────────────────────────────────────────
 void Bot::writeControls(const WheelOutput& out) {
     if (!own_ctrl_mm_.valid) return;
@@ -411,6 +505,8 @@ void Bot::writeControls(const WheelOutput& out) {
     ctrl->clutch       = 0.f;
     ctrl->handbrake    = 0.f;
     ctrl->autoshift_active = true;
+    ctrl->teleport_to  = teleport_pending_ ? static_cast<uint8_t>(1) : static_cast<uint8_t>(0);
+    teleport_pending_  = false;  // consumed — only active for the one frame we set it
 }
 
 // ─── Settings / Status ────────────────────────────────────────────────────────
@@ -525,14 +621,3 @@ void Bot::logFrame(const WheelOutput& out, const ControlDemand& raw, float dt_ms
     log_file_ << buf;
 }
 
-bool Bot::collisionDetected(const std::vector<TrafficCar>& traffic, float ego_d) {
-    float ego_s = planner_->egoS();
-    for (auto& tc : traffic) {
-        float ds = std::abs(tc.s0 - ego_s);
-        if (ds < (tc.half_l + 2.3f) * 1.5f) {
-            float dd = std::abs(tc.d0 - ego_d);
-            if (dd < tc.half_w + 0.95f + 0.1f) return true;
-        }
-    }
-    return false;
-}

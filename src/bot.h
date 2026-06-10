@@ -48,6 +48,14 @@ struct PlanOutput {
     float plan_dt_ms = 0.f;
 };
 
+// ── Bot state machine ────────────────────────────────────────────────────────
+enum class BotState {
+    DISABLED,   // F5 off — no output
+    ACTIVE,     // full planner + controller
+    CRASHED,    // braking, then teleporting to pits
+    PIT_EXIT    // driving out of pit lane onto track
+};
+
 // ── Main bot class ─────────────────────────────────────────────────────────────
 class Bot {
 public:
@@ -108,6 +116,12 @@ private:
 
     // State
     std::atomic<bool>  running_{ false };
+    std::atomic<bool>  is_active_{ false }; // true only while state_ == ACTIVE; read by planningLoop
+    BotState state_              = BotState::DISABLED;
+    float    crashed_timer_      = 0.f;
+    float    pit_exit_timer_     = 0.f;
+    bool     teleport_pending_   = false;
+    uint32_t last_collision_counter_ = 0;
     std::thread        plan_thread_;
     std::thread        hotkey_thread_;
 
@@ -142,10 +156,12 @@ private:
     // Read + project traffic into Frenet
     std::vector<TrafficCar> readTraffic();
 
-    // Write control output (CarControls mmap)
+    // Write control output (CarControls mmap); clears teleport_pending_ after one frame
     void writeControls(const WheelOutput& out);
 
-    // Check for collision event (any traffic car too close)
-    bool collisionDetected(const std::vector<TrafficCar>& traffic,
-                           float ego_d);
+    // Drive pit lane exit — gentle throttle, neutral steer until clear
+    WheelOutput drivePitExit(float speed_ms, float dt);
+
+    // Set teleport_to=1 for one frame via writeControls
+    void triggerTeleportToPits();
 };
