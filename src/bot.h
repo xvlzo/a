@@ -114,11 +114,14 @@ private:
     // State
     std::atomic<bool>  running_{ false };
     std::atomic<bool>  is_active_{ false }; // true only while state_ == ACTIVE; read by planningLoop
-    std::atomic<bool>  enabled_{ false };   // F5 toggle; written by hotkeyLoop, read by controlLoop
+    std::atomic<bool>  enabled_{ false };         // F5 toggle; written by hotkeyLoop, read by controlLoop
+    std::atomic<float> live_target_kph_{ 160.f }; // written by any thread, read by planningLoop
+    std::atomic<float> live_safety_margin_{ 1.2f };
     BotState state_              = BotState::DISABLED;
     float    crashed_timer_      = 0.f;
     float    pit_exit_timer_     = 0.f;
     bool     teleport_pending_   = false;
+    bool     teleport_sent_      = false; // one-shot guard: only send teleport once per CRASHED entry
     uint32_t last_collision_counter_ = 0;
     std::thread        plan_thread_;
     std::thread        hotkey_thread_;

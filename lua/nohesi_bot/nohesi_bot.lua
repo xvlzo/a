@@ -61,7 +61,9 @@ local function parseStatus(line)
             elseif k == 'd'  then status.d        = n or status.d
             elseif k == '3x' then status.passes_3x = n or status.passes_3x
             elseif k == '1x' then status.passes_1x = n or status.passes_1x
-            elseif k == 'on' then status.on = (v == '1')
+            elseif k == 'on' then
+                status.on        = (v == '1')
+                settings.enabled = status.on  -- keep toggle button in sync with F5 hotkey
             end
         end
     end

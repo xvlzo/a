@@ -66,12 +66,15 @@ bool Bot::init() {
     wheel_->setParams(cfg_.smoothness, cfg_.humanization);
 
     // Default settings
-    settings_.enabled            = false;
-    settings_.humanization       = cfg_.humanization;
-    settings_.smoothness         = cfg_.smoothness;
-    settings_.target_kph         = cfg_.target_kph;
-    settings_.safety_margin_m    = cfg_.safety_margin;
+    settings_.enabled               = false;
+    settings_.humanization          = cfg_.humanization;
+    settings_.smoothness            = cfg_.smoothness;
+    settings_.target_kph            = cfg_.target_kph;
+    settings_.safety_margin_m       = cfg_.safety_margin;
     settings_.close_pass_aggressive = true;
+
+    live_target_kph_.store(cfg_.target_kph);
+    live_safety_margin_.store(cfg_.safety_margin);
 
     if (!openMmaps()) return false;
     openLogFile();
@@ -107,6 +110,15 @@ bool Bot::openMmaps() {
 
     // Settings mmap (Lua writes, we read)
     settings_mm_.openReadWrite("NohesiBot.Settings.v0", sizeof(BotSettings));
+    if (settings_mm_.valid) {
+        // Pre-fill with cmd-line defaults so readSettings() is a no-op before Lua connects.
+        // Zeroed memory would incorrectly override humanization/smoothness (0.0 passes range checks).
+        auto* s = static_cast<BotSettings*>(settings_mm_.pView);
+        s->humanization    = cfg_.humanization;
+        s->smoothness      = cfg_.smoothness;
+        s->target_kph      = cfg_.target_kph;
+        s->safety_margin_m = cfg_.safety_margin;
+    }
 
     // Status mmap (we write, Lua reads)
     status_mm_.openReadWrite("NohesiBot.Status.v0", sizeof(BotStatus));
@@ -223,6 +235,7 @@ void Bot::controlLoop() {
                     is_active_ = false;
                     state_ = BotState::CRASHED;
                     crashed_timer_ = 0.f;
+                    teleport_sent_ = false;
                     break;
                 }
                 last_collision_counter_ = d->collision_counter;
@@ -255,8 +268,9 @@ void Bot::controlLoop() {
             crashed_timer_ += dt;
             if (crashed_timer_ < 0.2f) {
                 wheel_out = {0.f, 0.f, 1.f};          // hard brake
-            } else if (crashed_timer_ < 0.4f) {
-                triggerTeleportToPits();               // sets teleport_to=1 next writeControls
+            } else if (!teleport_sent_) {
+                triggerTeleportToPits();               // sets teleport_to=1 for exactly one frame
+                teleport_sent_ = true;
                 wheel_out = {0.f, 0.f, 0.f};
             }
             // else hold idle while game places us in pit box (~2-3s total)
@@ -332,12 +346,14 @@ void Bot::planningLoop() {
         auto traffic = readTraffic();
 
         // Adapt speed for tight gaps
-        float target_v = cfg_.target_kph / 3.6f;
+        const float cur_target_kph  = live_target_kph_.load();
+        const float cur_safety_m    = live_safety_margin_.load();
+        float target_v = cur_target_kph / 3.6f;
         for (auto& tc : traffic) {
             float rel_s = tc.s0 - planner_->egoS();
             if (rel_s > 0.f && rel_s < 30.f) {
                 float lat = std::abs(planner_->egoD() - tc.d0) - 0.95f - tc.half_w;
-                if (lat < cfg_.safety_margin + 1.f)
+                if (lat < cur_safety_m + 1.f)
                     target_v = std::min(target_v, cfg_.min_kph / 3.6f + 10.f);
             }
         }
@@ -386,20 +402,32 @@ void Bot::hotkeyLoop() {
                 break;
             case 2:
                 settings_.humanization = std::min(1.f, settings_.humanization + 0.1f);
+                if (settings_mm_.valid)
+                    static_cast<BotSettings*>(settings_mm_.pView)->humanization = settings_.humanization;
                 wheel_->setParams(settings_.smoothness, settings_.humanization);
                 printf("[Bot] Humanization: %.1f\n", settings_.humanization);
                 break;
             case 3:
                 settings_.humanization = std::max(0.f, settings_.humanization - 0.1f);
+                if (settings_mm_.valid)
+                    static_cast<BotSettings*>(settings_mm_.pView)->humanization = settings_.humanization;
                 wheel_->setParams(settings_.smoothness, settings_.humanization);
                 printf("[Bot] Humanization: %.1f\n", settings_.humanization);
                 break;
             case 4:
                 settings_.target_kph = std::min(220.f, settings_.target_kph + 10.f);
+                cfg_.target_kph      = settings_.target_kph;
+                live_target_kph_.store(settings_.target_kph);
+                if (settings_mm_.valid)
+                    static_cast<BotSettings*>(settings_mm_.pView)->target_kph = settings_.target_kph;
                 printf("[Bot] Target: %.0f kph\n", settings_.target_kph);
                 break;
             case 5:
                 settings_.target_kph = std::max(80.f, settings_.target_kph - 10.f);
+                cfg_.target_kph      = settings_.target_kph;
+                live_target_kph_.store(settings_.target_kph);
+                if (settings_mm_.valid)
+                    static_cast<BotSettings*>(settings_mm_.pView)->target_kph = settings_.target_kph;
                 printf("[Bot] Target: %.0f kph\n", settings_.target_kph);
                 break;
             }
@@ -511,21 +539,36 @@ void Bot::writeControls(const WheelOutput& out) {
 void Bot::readSettings() {
     if (!settings_mm_.valid) return;
     auto* s = static_cast<const BotSettings*>(settings_mm_.pView);
-    // Only pull from Lua if it actually changed something meaningful
-    if (s->humanization >= 0.f && s->humanization <= 1.f)
-        settings_.humanization = s->humanization;
-    if (s->smoothness >= 0.f && s->smoothness <= 1.f)
-        settings_.smoothness   = s->smoothness;
-    if (s->target_kph >= 80.f && s->target_kph <= 220.f)
-        settings_.target_kph   = s->target_kph;
-    if (s->safety_margin_m >= 0.5f && s->safety_margin_m <= 5.f)
-        settings_.safety_margin_m = s->safety_margin_m;
 
-    static float cached_smooth = -1.f, cached_hum = -1.f;
-    if (settings_.smoothness != cached_smooth || settings_.humanization != cached_hum) {
+    bool wheel_dirty = false;
+
+    if (s->humanization >= 0.f && s->humanization <= 1.f &&
+        std::abs(s->humanization - settings_.humanization) > 0.005f) {
+        settings_.humanization = s->humanization;
+        wheel_dirty = true;
+    }
+    if (s->smoothness >= 0.f && s->smoothness <= 1.f &&
+        std::abs(s->smoothness - settings_.smoothness) > 0.005f) {
+        settings_.smoothness = s->smoothness;
+        wheel_dirty = true;
+    }
+    if (wheel_dirty)
         wheel_->setParams(settings_.smoothness, settings_.humanization);
-        cached_smooth = settings_.smoothness;
-        cached_hum    = settings_.humanization;
+
+    if (s->target_kph >= 80.f && s->target_kph <= 220.f &&
+        std::abs(s->target_kph - settings_.target_kph) > 0.5f) {
+        settings_.target_kph = s->target_kph;
+        cfg_.target_kph      = s->target_kph;
+        live_target_kph_.store(s->target_kph);
+    }
+    if (s->safety_margin_m >= 0.5f && s->safety_margin_m <= 5.f &&
+        std::abs(s->safety_margin_m - settings_.safety_margin_m) > 0.01f) {
+        settings_.safety_margin_m = s->safety_margin_m;
+        cfg_.safety_margin        = s->safety_margin_m;
+        live_safety_margin_.store(s->safety_margin_m);
+        PlannerConfig pc = planner_->config();
+        pc.safety_margin_m = s->safety_margin_m;
+        planner_->setConfig(pc);
     }
 }
 
@@ -569,15 +612,25 @@ void Bot::tickUDP() {
         lua_connected = true;
         buf[n] = '\0';
         // Simple key=value protocol: "enabled=1", "hum=0.8", "speed=170"
-        if (strncmp(buf, "enabled=", 8) == 0)
+        if (strncmp(buf, "enabled=", 8) == 0) {
             enabled_ = (buf[8] == '1');
-        else if (strncmp(buf, "hum=", 4) == 0)
+        } else if (strncmp(buf, "hum=", 4) == 0) {
             settings_.humanization = static_cast<float>(std::clamp(atof(buf+4), 0.0, 1.0));
-        else if (strncmp(buf, "smooth=", 7) == 0)
+            if (settings_mm_.valid)
+                static_cast<BotSettings*>(settings_mm_.pView)->humanization = settings_.humanization;
+            wheel_->setParams(settings_.smoothness, settings_.humanization);
+        } else if (strncmp(buf, "smooth=", 7) == 0) {
             settings_.smoothness = static_cast<float>(std::clamp(atof(buf+7), 0.0, 1.0));
-        else if (strncmp(buf, "speed=", 6) == 0)
+            if (settings_mm_.valid)
+                static_cast<BotSettings*>(settings_mm_.pView)->smoothness = settings_.smoothness;
+            wheel_->setParams(settings_.smoothness, settings_.humanization);
+        } else if (strncmp(buf, "speed=", 6) == 0) {
             settings_.target_kph = static_cast<float>(std::clamp(atof(buf+6), 80.0, 220.0));
-        wheel_->setParams(settings_.smoothness, settings_.humanization);
+            cfg_.target_kph      = settings_.target_kph;
+            live_target_kph_.store(settings_.target_kph);
+            if (settings_mm_.valid)
+                static_cast<BotSettings*>(settings_mm_.pView)->target_kph = settings_.target_kph;
+        }
     }
 
     // Send status to Lua every ~200ms (every ~67 control frames at 333 Hz)

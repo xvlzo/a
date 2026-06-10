@@ -100,6 +100,7 @@ class FrenetPlanner {
 public:
     explicit FrenetPlanner(const Spline& spline);
     void setConfig(const PlannerConfig& cfg) { cfg_ = cfg; }
+    const PlannerConfig& config() const { return cfg_; }
 
     // Update ego Frenet state (call before plan())
     void updateEgo(float wx, float wz, float speed_ms, float heading, int hint_idx);

@@ -57,13 +57,13 @@ QuinticPoly::QuinticPoly(float d0, float dd0, float ddd0,
 }
 
 float QuinticPoly::d(float t) const {
-    return a[0]+a[1]*t+a[2]*t*t+a[3]*t*t*t+a[4]*t*t*t*t+a[5]*t*t*t*t*t;
+    return a[0]+t*(a[1]+t*(a[2]+t*(a[3]+t*(a[4]+t*a[5]))));
 }
 float QuinticPoly::dd(float t) const {
-    return a[1]+2.f*a[2]*t+3.f*a[3]*t*t+4.f*a[4]*t*t*t+5.f*a[5]*t*t*t*t;
+    return a[1]+t*(2.f*a[2]+t*(3.f*a[3]+t*(4.f*a[4]+t*5.f*a[5])));
 }
 float QuinticPoly::ddd(float t) const {
-    return 2.f*a[2]+6.f*a[3]*t+12.f*a[4]*t*t+20.f*a[5]*t*t*t;
+    return 2.f*a[2]+t*(6.f*a[3]+t*(12.f*a[4]+t*20.f*a[5]));
 }
 float QuinticPoly::jerkIntegral(float T, int n) const {
     float dt = T / n, total = 0.f;
@@ -92,13 +92,13 @@ QuarticPoly::QuarticPoly(float s0, float ds0, float dds0,
 }
 
 float QuarticPoly::s(float t) const {
-    return b[0]+b[1]*t+b[2]*t*t+b[3]*t*t*t+b[4]*t*t*t*t;
+    return b[0]+t*(b[1]+t*(b[2]+t*(b[3]+t*b[4])));
 }
 float QuarticPoly::ds(float t) const {
-    return b[1]+2.f*b[2]*t+3.f*b[3]*t*t+4.f*b[4]*t*t*t;
+    return b[1]+t*(2.f*b[2]+t*(3.f*b[3]+t*4.f*b[4]));
 }
 float QuarticPoly::dds(float t) const {
-    return 2.f*b[2]+6.f*b[3]*t+12.f*b[4]*t*t;
+    return 2.f*b[2]+t*(6.f*b[3]+t*12.f*b[4]);
 }
 float QuarticPoly::jerkIntegral(float T, int n) const {
     float dt = T / n, total = 0.f;
