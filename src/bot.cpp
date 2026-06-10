@@ -305,8 +305,9 @@ void Bot::controlLoop() {
         // ── DISABLED: idle ───────────────────────────────────────────────────
         case BotState::DISABLED:
         default:
-            status_.active    = false;
-            status_.speed_kph = speed_ms * 3.6f;
+            status_.active     = false;
+            status_.speed_kph  = speed_ms * 3.6f;
+            status_.target_kph = settings_.target_kph;
             break;
         }
 
