@@ -239,9 +239,20 @@ void Bot::controlLoop() {
         case BotState::ACTIVE: {
             if (own_car_mm_.valid) {
                 auto* d = static_cast<const CarData*>(own_car_mm_.pView);
-                if (d->collision_counter != last_collision_counter_
-                    && d->collision_depth > 0.05f) {
-                    printf("[Bot] Collision! Returning to pits — score reset\n");
+                // Accumulate collision depth on new events; decay when clear.
+                // A brief tap (<0.15m) won't reach the 0.6m threshold.
+                // A real crash (single 0.6m+ hit, or sustained heavy contact) will.
+                if (d->collision_counter != last_collision_counter_) {
+                    if (d->collision_depth > 0.15f)
+                        crash_depth_acc_ += d->collision_depth;
+                    last_collision_counter_ = d->collision_counter;
+                }
+                crash_depth_acc_ *= 0.995f; // half-life ~420ms at 333Hz
+
+                if (crash_depth_acc_ > 0.6f) {
+                    printf("[Bot] Crash! (acc=%.2f) Returning to pits — score reset\n",
+                           crash_depth_acc_);
+                    crash_depth_acc_ = 0.f;
                     passes_3x_total_.store(0);
                     passes_1x_total_.store(0);
                     std::fill(std::begin(car_was_behind_), std::end(car_was_behind_), true);
@@ -251,7 +262,6 @@ void Bot::controlLoop() {
                     teleport_sent_ = false;
                     break;
                 }
-                last_collision_counter_ = d->collision_counter;
             }
 
             ControlDemand raw = controller_->update(
@@ -306,6 +316,7 @@ void Bot::controlLoop() {
                 || (!in_pit_lane && !in_pit && speed_ms > 8.f && pit_exit_timer_ > 4.f)) {
                 state_ = BotState::ACTIVE;
                 is_active_ = true;
+                crash_depth_acc_ = 0.f;
                 wheel_->reset();
                 controller_->reset();
                 if (own_car_mm_.valid)

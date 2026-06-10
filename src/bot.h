@@ -121,6 +121,7 @@ private:
     bool     teleport_pending_   = false;
     bool     teleport_sent_      = false; // one-shot guard: only send teleport once per CRASHED entry
     uint32_t last_collision_counter_ = 0;
+    float    crash_depth_acc_    = 0.f;  // accumulated collision depth — decays when clear
     std::thread        plan_thread_;
     std::thread        hotkey_thread_;
 
