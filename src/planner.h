@@ -24,11 +24,10 @@ struct TrafficCar {
     float half_l;           // half-length (m)
     int   car_idx;
 
-    // Predict position at time t (constant-speed lane-keep)
+    // Predict position at time t (constant velocity — car stays in its lane)
     void predict(float t, float& s_out, float& d_out) const {
         s_out = s0 + v_s * t;
-        // Lane-keep model: d decays toward 0 with τ = 2.5s
-        d_out = d0 * std::exp(-t / 2.5f);
+        d_out = d0 + v_d * t;  // linear extrapolation of measured lateral velocity
     }
 };
 
@@ -152,4 +151,7 @@ private:
 
     // Emergency: decelerate + hold lane
     Trajectory emergencyTrajectory() const;
+
+    // Wrap an arc-length delta into (-total_length/2, total_length/2]
+    float wrapS(float delta) const;
 };

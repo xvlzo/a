@@ -103,6 +103,13 @@ PlannerConfig FrenetPlanner::config() const {
     return cfg_pending_;
 }
 
+float FrenetPlanner::wrapS(float delta) const {
+    float L = spline_.total_length;
+    if (delta >  L * 0.5f) delta -= L;
+    if (delta < -L * 0.5f) delta += L;
+    return delta;
+}
+
 static float wrapAngle(float a) {
     while (a >  3.14159f) a -= 6.28318f;
     while (a < -3.14159f) a += 6.28318f;
@@ -151,6 +158,7 @@ std::vector<float> FrenetPlanner::buildDCandidates(
     float target_clearance = cfg_.target_pass_dist + cfg_.ego_half_w;
     for (auto& tc : traffic) {
         float rel_s = tc.s0 - ego_s_;
+        if (rel_s < 0.f) rel_s += spline_.total_length;  // wrap at S/F line
         if (rel_s > 5.f && rel_s < 80.f) {
             ds.push_back(tc.d0 + tc.half_w + target_clearance);
             ds.push_back(tc.d0 - tc.half_w - target_clearance);
@@ -173,8 +181,8 @@ bool FrenetPlanner::isFeasible(const Trajectory& traj,
             float t = (i + 1) * dt;
             float ts, td;
             tc.predict(t, ts, td);
-            float ds = std::abs(traj.s[i] - ts);
-            if (ds > (tc.half_l + cfg_.ego_half_l) * 3.f) continue; // longitudinally clear
+            if (std::abs(wrapS(traj.s[i] - ts)) > (tc.half_l + cfg_.ego_half_l) * 3.f)
+                continue; // longitudinally clear
             float dd = std::abs(traj.d[i] - td);
             float min_gap = tc.half_w + cfg_.ego_half_w + margin;
             if (dd < min_gap) return false;
@@ -188,8 +196,8 @@ float FrenetPlanner::scoreTrajectory(Trajectory& traj,
                                       float target_v) const {
     float score = 0.f;
 
-    // Progress
-    score += 10.f * (traj.s[traj.n_steps-1] - ego_s_);
+    // Progress (wrap so crossing S/F line isn't penalised)
+    score += 10.f * wrapS(traj.s[traj.n_steps-1] - ego_s_);
 
     // Speed
     float mean_ds = 0.f;
@@ -210,7 +218,7 @@ float FrenetPlanner::scoreTrajectory(Trajectory& traj,
             float t = (i+1)*dt;
             float ts, td;
             tc.predict(t, ts, td);
-            if (traj.s[i] > ts + tc.half_l) { // we've passed this car
+            if (wrapS(traj.s[i] - ts) > tc.half_l) { // ego has passed traffic car's rear
                 float lateral = std::abs(traj.d[i] - td) - tc.half_w - cfg_.ego_half_w;
                 if (lateral > 0.f && lateral <= cfg_.close_3x_m) {
                     ++c3x; counted = true;
@@ -260,10 +268,13 @@ Trajectory FrenetPlanner::plan(const std::vector<TrafficCar>& traffic,
         float dt = T / n;
 
         for (float dT : d_cands) {
-            // Clamp to track boundaries
+            // Clamp to track boundaries; skip if track too narrow to fit
             float sl, sr;
             spline_.getWidths(hint_idx_, sl, sr);
-            dT = std::clamp(dT, -(sr - cfg_.ego_half_w), sl - cfg_.ego_half_w);
+            float d_min = -(sr - cfg_.ego_half_w);
+            float d_max =   sl - cfg_.ego_half_w;
+            if (d_min > d_max) continue;
+            dT = std::clamp(dT, d_min, d_max);
 
             QuinticPoly lat(ego_d_, ego_dd_, ego_ddd_, dT, 0.f, 0.f, T);
 
@@ -276,6 +287,8 @@ Trajectory FrenetPlanner::plan(const std::vector<TrafficCar>& traffic,
                 for (int i = 0; i < n; ++i) {
                     float t = (i+1) * dt;
                     traj.s[i]  = lon.s(t);
+                    if (traj.s[i] >= spline_.total_length)
+                        traj.s[i] -= spline_.total_length; // normalise across S/F line
                     traj.d[i]  = lat.d(t);
                     traj.ds[i] = lon.ds(t);
                     traj.dd[i] = lat.dd(t);
