@@ -61,7 +61,6 @@ public:
         int    max_traffic    = 64;
         float  control_hz     = 333.f;
         float  planning_hz    = 144.f;
-        float  traffic_hz     = 60.f;
         float  target_kph     = 160.f;
         float  min_kph        = 80.f;
         float  max_kph        = 220.f;
