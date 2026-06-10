@@ -32,9 +32,8 @@ struct MmapHandle {
 // ── Per-traffic-car runtime state ─────────────────────────────────────────────
 struct TrafficSlot {
     MmapHandle mmap;
-    CarPublicData data{};
-    bool        active = false;
-    int         idx    = 0;
+    bool       active = false;
+    int        idx    = 0;
 };
 
 // ── Planner output (atomic handoff between planning and control threads) ─────
