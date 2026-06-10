@@ -141,6 +141,9 @@ struct BotSettings {
     float   safety_margin_m;      // 16
     bool    close_pass_aggressive;// 20
     uint8_t _pad2[3];
+    float   close_3x_m;          // 24  edge-to-edge gap for 3× pass
+    float   close_1x_m;          // 28  edge-to-edge gap for 1× pass
+    float   target_pass_dist_m;  // 32  aim clearance when weaving
 };
 
 // ── BotStatus  — written by bot, read by Lua overlay ──────────────────────

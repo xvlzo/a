@@ -36,6 +36,9 @@ local settings = {
     smoothness   = 0.6,
     target_kph   = 160,
     safety       = 1.2,
+    close_3x     = 4.0,
+    close_1x     = 7.0,
+    pass_dist    = 3.0,
 }
 
 local dirty = false          -- settings changed, need to send
@@ -90,6 +93,9 @@ function script.update(dt)
         sendSetting('hum',       string.format('%.2f', settings.humanization))
         sendSetting('smooth',    string.format('%.2f', settings.smoothness))
         sendSetting('speed',     string.format('%.0f', settings.target_kph))
+        sendSetting('close3x',   string.format('%.1f', settings.close_3x))
+        sendSetting('close1x',   string.format('%.1f', settings.close_1x))
+        sendSetting('passdist',  string.format('%.1f', settings.pass_dist))
         dirty = false
     end
 end
@@ -145,6 +151,29 @@ function script.windowMain(dt)
                                  string.format('%.0f', settings.target_kph))
     if math.abs(v_new - settings.target_kph) > 0.5 then
         settings.target_kph = v_new
+        dirty = true
+    end
+
+    ui.separator()
+
+    local c3_new = ui.sliderFloat('3x gap m', settings.close_3x, 1, 10,
+                                  string.format('%.1f', settings.close_3x))
+    if math.abs(c3_new - settings.close_3x) > 0.05 then
+        settings.close_3x = c3_new
+        dirty = true
+    end
+
+    local c1_new = ui.sliderFloat('1x gap m', settings.close_1x, 1, 15,
+                                  string.format('%.1f', settings.close_1x))
+    if math.abs(c1_new - settings.close_1x) > 0.05 then
+        settings.close_1x = c1_new
+        dirty = true
+    end
+
+    local pd_new = ui.sliderFloat('Pass dist m', settings.pass_dist, 0.5, 8,
+                                   string.format('%.1f', settings.pass_dist))
+    if math.abs(pd_new - settings.pass_dist) > 0.05 then
+        settings.pass_dist = pd_new
         dirty = true
     end
 end

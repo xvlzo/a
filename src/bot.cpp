@@ -113,10 +113,14 @@ bool Bot::openMmaps() {
         // Pre-fill with cmd-line defaults so readSettings() is a no-op before Lua connects.
         // Zeroed memory would incorrectly override humanization/smoothness (0.0 passes range checks).
         auto* s = static_cast<BotSettings*>(settings_mm_.pView);
-        s->humanization    = cfg_.humanization;
-        s->smoothness      = cfg_.smoothness;
-        s->target_kph      = cfg_.target_kph;
-        s->safety_margin_m = cfg_.safety_margin;
+        s->humanization       = cfg_.humanization;
+        s->smoothness         = cfg_.smoothness;
+        s->target_kph         = cfg_.target_kph;
+        s->safety_margin_m    = cfg_.safety_margin;
+        const auto& pc        = planner_->config();
+        s->close_3x_m         = pc.close_3x_m;
+        s->close_1x_m         = pc.close_1x_m;
+        s->target_pass_dist_m = pc.target_pass_dist;
     }
 
     // Status mmap (we write, Lua reads)
@@ -162,6 +166,15 @@ void Bot::stop() {
     if (hotkey_thread_.joinable()) hotkey_thread_.join();
     if (!cfg_.dry_run && own_ctrl_mm_.valid)
         writeControls({ 0.f, 0.f, 0.f }); // release
+    if (log_file_) {
+        std::lock_guard<std::mutex> lk(log_mutex_);
+        char buf[128];
+        snprintf(buf, sizeof(buf),
+                 "{\"session_end\":true,\"passes_3x\":%d,\"passes_1x\":%d}\n",
+                 passes_3x_total_.load(), passes_1x_total_.load());
+        log_file_ << buf;
+        log_file_.flush();
+    }
 }
 
 // ─── Control loop (333 Hz, main thread) ──────────────────────────────────────
@@ -369,6 +382,15 @@ void Bot::planningLoop() {
         float plan_ms = static_cast<float>(
             (t1.QuadPart - t0.QuadPart) * 1000.0 / timer.freqQpc());
 
+        if (plan_ms > 6.f) {
+            static DWORD last_warn_ms = 0;
+            DWORD now_ms = GetTickCount();
+            if (now_ms - last_warn_ms > 1000) {
+                printf("[Bot] Planning spike: %.1f ms\n", plan_ms);
+                last_warn_ms = now_ms;
+            }
+        }
+
         // Detect actual passes: count only when ego transitions from behind to ahead of a car.
         // This avoids the ~100-200x overcount from scoring the same future pass every frame.
         {
@@ -515,8 +537,8 @@ std::vector<TrafficCar> Bot::readTraffic() {
         tc.d0 = fs.d;
         tc.v_s = speed_ms * std::cos(herr);
         tc.v_d = speed_ms * std::sin(herr);
-        tc.half_w  = 0.9f;   // ~1.8m wide sedan
-        tc.half_l  = 2.3f;   // ~4.6m long sedan
+        tc.half_w  = planner_->config().traffic_half_w;
+        tc.half_l  = planner_->config().traffic_half_l;
         tc.car_idx = slot.idx;
 
         result.push_back(tc);
@@ -588,6 +610,25 @@ void Bot::readSettings() {
         pc.safety_margin_m = s->safety_margin_m;
         planner_->setConfig(pc);
     }
+
+    {
+        PlannerConfig pc = planner_->config();
+        bool pc_dirty = false;
+        if (s->close_3x_m >= 1.f && s->close_3x_m <= 10.f &&
+            std::abs(s->close_3x_m - pc.close_3x_m) > 0.05f) {
+            pc.close_3x_m = s->close_3x_m; pc_dirty = true;
+        }
+        if (s->close_1x_m >= 1.f && s->close_1x_m <= 15.f &&
+            std::abs(s->close_1x_m - pc.close_1x_m) > 0.05f) {
+            pc.close_1x_m = s->close_1x_m; pc_dirty = true;
+        }
+        if (s->target_pass_dist_m >= 0.5f && s->target_pass_dist_m <= 8.f &&
+            std::abs(s->target_pass_dist_m - pc.target_pass_dist) > 0.05f) {
+            pc.target_pass_dist = s->target_pass_dist_m; pc_dirty = true;
+        }
+        if (pc_dirty)
+            planner_->setConfig(pc);
+    }
 }
 
 void Bot::writeStatus() {
@@ -647,6 +688,18 @@ void Bot::tickUDP() {
             live_target_kph_.store(settings_.target_kph);
             if (settings_mm_.valid)
                 static_cast<BotSettings*>(settings_mm_.pView)->target_kph = settings_.target_kph;
+        } else if (strncmp(buf, "close3x=", 8) == 0) {
+            if (settings_mm_.valid)
+                static_cast<BotSettings*>(settings_mm_.pView)->close_3x_m =
+                    static_cast<float>(std::clamp(atof(buf+8), 1.0, 10.0));
+        } else if (strncmp(buf, "close1x=", 8) == 0) {
+            if (settings_mm_.valid)
+                static_cast<BotSettings*>(settings_mm_.pView)->close_1x_m =
+                    static_cast<float>(std::clamp(atof(buf+8), 1.0, 15.0));
+        } else if (strncmp(buf, "passdist=", 9) == 0) {
+            if (settings_mm_.valid)
+                static_cast<BotSettings*>(settings_mm_.pView)->target_pass_dist_m =
+                    static_cast<float>(std::clamp(atof(buf+9), 0.5, 8.0));
         }
     }
 

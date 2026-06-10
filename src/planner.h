@@ -91,6 +91,8 @@ struct PlannerConfig {
     float d_step            = 0.4f;   // lateral sampling resolution
     float ego_half_w        = 0.95f;
     float ego_half_l        = 2.3f;
+    float traffic_half_w    = 0.9f;   // default sedan half-width used for all traffic cars
+    float traffic_half_l    = 2.3f;   // default sedan half-length used for all traffic cars
 };
 
 // ── Planner ──────────────────────────────────────────────────────────────────

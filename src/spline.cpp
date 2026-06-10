@@ -112,26 +112,27 @@ FrenetState Spline::project(float wx, float wz, int hint_idx, int window) const 
     int N = size();
     if (N < 2) return {};
 
-    int lo = std::max(0, hint_idx - window);
-    int hi = std::min(N - 1, hint_idx + window);
-
-    // Coarse: nearest point in window
+    // Coarse: nearest point in window — wraps at start/finish line
     float best_d2 = 1e30f;
-    int best_i = lo;
-    for (int i = lo; i <= hi; ++i) {
+    int best_i = ((hint_idx % N) + N) % N;
+    for (int di = -window; di <= window; ++di) {
+        int i = ((hint_idx + di) % N + N) % N;
         float dx = pts[i].x - wx, dz = pts[i].z - wz;
         float d2 = dx*dx + dz*dz;
         if (d2 < best_d2) { best_d2 = d2; best_i = i; }
     }
 
-    // Fine: segment projection
-    int i0 = best_i < N-1 ? best_i : N-2;
-    int i1 = i0 + 1;
+    // Fine: segment projection (wrap last segment back to index 0)
+    int i0 = best_i;
+    int i1 = (i0 + 1) % N;
 
     float t, cx, cz;
     projectToSegment(wx, wz, pts[i0].x, pts[i0].z, pts[i1].x, pts[i1].z, t, cx, cz);
 
-    float s = pts[i0].arc_length + t * (pts[i1].arc_length - pts[i0].arc_length);
+    float s1 = (i1 == 0) ? total_length : pts[i1].arc_length;
+    float s   = pts[i0].arc_length + t * (s1 - pts[i0].arc_length);
+    if (s >= total_length) s -= total_length;
+
     float d = signedOffset(wx, wz, pts[i0].x, pts[i0].z, pts[i1].x, pts[i1].z);
     float h = headings[i0];
 
