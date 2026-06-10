@@ -1,8 +1,6 @@
 #include "spline.h"
 #include <fstream>
-#include <cstring>
 #include <algorithm>
-#include <stdexcept>
 
 // fast_lane.ai v7 binary layout
 // Header:  version(i32) point_count(i32) lap_time(i32) sample_count(i32) = 16 bytes
@@ -182,7 +180,3 @@ void Spline::getWidths(int idx, float& left, float& right) const {
     right = ext[idx].side_right;
 }
 
-float Spline::optimalSpeed(int idx) const {
-    if (idx < 0 || idx >= (int)ext.size()) return 44.f; // 160 kph fallback
-    return ext[idx].speed;
-}

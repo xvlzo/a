@@ -42,7 +42,6 @@ struct QuinticPoly {
     float d(float t)   const;
     float dd(float t)  const;
     float ddd(float t) const;
-    float jerkIntegral(float T, int n = 20) const;
 };
 
 // ── Quartic polynomial s(t) for longitudinal ─────────────────────────────────
@@ -56,7 +55,6 @@ struct QuarticPoly {
     float s(float t)   const;
     float ds(float t)  const;
     float dds(float t) const;
-    float jerkIntegral(float T, int n = 20) const;
 };
 
 // ── Single candidate trajectory ───────────────────────────────────────────────

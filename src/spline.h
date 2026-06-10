@@ -52,9 +52,6 @@ public:
     // Track half-widths at index (left, right)
     void getWidths(int idx, float& left, float& right) const;
 
-    // Road-optimal speed at index (m/s)
-    float optimalSpeed(int idx) const;
-
     int size() const { return static_cast<int>(pts.size()); }
 
 private:

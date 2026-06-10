@@ -5,8 +5,6 @@
 #include <cstring>
 #include <ctime>
 #include <algorithm>
-#include <sstream>
-#include <iomanip>
 #include <ws2tcpip.h>
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "winmm.lib")

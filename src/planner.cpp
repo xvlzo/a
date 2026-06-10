@@ -1,6 +1,5 @@
 #include "planner.h"
 #include <algorithm>
-#include <cstring>
 
 // ── Solve 3×3 via Cramer's rule ─────────────────────────────────────────────
 static bool solve3x3(const float A[3][3], const float b[3], float x[3]) {
@@ -65,15 +64,6 @@ float QuinticPoly::dd(float t) const {
 float QuinticPoly::ddd(float t) const {
     return 2.f*a[2]+t*(6.f*a[3]+t*(12.f*a[4]+t*20.f*a[5]));
 }
-float QuinticPoly::jerkIntegral(float T, int n) const {
-    float dt = T / n, total = 0.f;
-    for (int i = 0; i < n; ++i) {
-        float j = ddd((i + 0.5f) * dt);
-        total += j*j*dt;
-    }
-    return total;
-}
-
 // ── QuarticPoly ──────────────────────────────────────────────────────────────
 QuarticPoly::QuarticPoly(float s0, float ds0, float dds0,
                          float dsT, float ddsT, float T) {
@@ -100,15 +90,6 @@ float QuarticPoly::ds(float t) const {
 float QuarticPoly::dds(float t) const {
     return 2.f*b[2]+t*(6.f*b[3]+t*12.f*b[4]);
 }
-float QuarticPoly::jerkIntegral(float T, int n) const {
-    float dt = T / n, total = 0.f;
-    for (int i = 0; i < n; ++i) {
-        float j = 6.f*b[3] + 24.f*b[4]*(i+0.5f)*dt;
-        total += j*j*dt;
-    }
-    return total;
-}
-
 // ── FrenetPlanner ─────────────────────────────────────────────────────────────
 FrenetPlanner::FrenetPlanner(const Spline& spline) : spline_(spline) {}
 

@@ -28,10 +28,6 @@ StanleyController::StanleyController(const Spline& spline,
       speed_pid_(0.06f, 0.003f, 0.008f, 20.f)
 {}
 
-void StanleyController::setSpeedPID(float kp, float ki, float kd) {
-    speed_pid_ = PID(kp, ki, kd, 20.f);
-}
-
 static float wrapAngle(float a) {
     while (a >  3.14159f) a -= 6.28318f;
     while (a < -3.14159f) a += 6.28318f;

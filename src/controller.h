@@ -35,7 +35,6 @@ public:
                       float max_steer_deg = 30.f);
 
     void setGains(float ke, float ks) { ke_ = ke; ks_ = ks; }
-    void setSpeedPID(float kp, float ki, float kd);
 
     // Compute desired control demand.
     // target_d: lateral offset from centre-line (Frenet d, metres)
