@@ -151,8 +151,8 @@ void Bot::run() {
     plan_thread_   = std::thread(&Bot::planningLoop, this);
     hotkey_thread_ = std::thread(&Bot::hotkeyLoop,   this);
     controlLoop(); // main thread
-    plan_thread_.join();
-    hotkey_thread_.join();
+    if (plan_thread_.joinable())   plan_thread_.join();
+    if (hotkey_thread_.joinable()) hotkey_thread_.join();
 }
 
 void Bot::stop() {
@@ -400,18 +400,18 @@ void Bot::hotkeyLoop() {
                 printf("[Bot] hotkey %s\n", enabled_.load() ? "ENABLED" : "DISABLED");
                 break;
             case 2:
-                settings_.humanization = std::min(1.f, settings_.humanization + 0.1f);
-                if (settings_mm_.valid)
-                    static_cast<BotSettings*>(settings_mm_.pView)->humanization = settings_.humanization;
-                wheel_->setParams(settings_.smoothness, settings_.humanization);
-                printf("[Bot] Humanization: %.1f\n", settings_.humanization);
+                if (settings_mm_.valid) {
+                    auto* s = static_cast<BotSettings*>(settings_mm_.pView);
+                    s->humanization = std::min(1.f, s->humanization + 0.1f);
+                    printf("[Bot] Humanization: %.1f\n", s->humanization);
+                }
                 break;
             case 3:
-                settings_.humanization = std::max(0.f, settings_.humanization - 0.1f);
-                if (settings_mm_.valid)
-                    static_cast<BotSettings*>(settings_mm_.pView)->humanization = settings_.humanization;
-                wheel_->setParams(settings_.smoothness, settings_.humanization);
-                printf("[Bot] Humanization: %.1f\n", settings_.humanization);
+                if (settings_mm_.valid) {
+                    auto* s = static_cast<BotSettings*>(settings_mm_.pView);
+                    s->humanization = std::max(0.f, s->humanization - 0.1f);
+                    printf("[Bot] Humanization: %.1f\n", s->humanization);
+                }
                 break;
             case 4:
                 settings_.target_kph = std::min(220.f, settings_.target_kph + 10.f);
@@ -614,15 +614,14 @@ void Bot::tickUDP() {
         if (strncmp(buf, "enabled=", 8) == 0) {
             enabled_ = (buf[8] == '1');
         } else if (strncmp(buf, "hum=", 4) == 0) {
-            settings_.humanization = static_cast<float>(std::clamp(atof(buf+4), 0.0, 1.0));
+            float v = static_cast<float>(std::clamp(atof(buf+4), 0.0, 1.0));
             if (settings_mm_.valid)
-                static_cast<BotSettings*>(settings_mm_.pView)->humanization = settings_.humanization;
-            wheel_->setParams(settings_.smoothness, settings_.humanization);
+                static_cast<BotSettings*>(settings_mm_.pView)->humanization = v;
+            // readSettings() picks this up next frame and calls wheel_->setParams()
         } else if (strncmp(buf, "smooth=", 7) == 0) {
-            settings_.smoothness = static_cast<float>(std::clamp(atof(buf+7), 0.0, 1.0));
+            float v = static_cast<float>(std::clamp(atof(buf+7), 0.0, 1.0));
             if (settings_mm_.valid)
-                static_cast<BotSettings*>(settings_mm_.pView)->smoothness = settings_.smoothness;
-            wheel_->setParams(settings_.smoothness, settings_.humanization);
+                static_cast<BotSettings*>(settings_mm_.pView)->smoothness = v;
         } else if (strncmp(buf, "speed=", 6) == 0) {
             settings_.target_kph = static_cast<float>(std::clamp(atof(buf+6), 80.0, 220.0));
             cfg_.target_kph      = settings_.target_kph;
