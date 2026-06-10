@@ -176,7 +176,7 @@ void Bot::controlLoop() {
         }
 
         // ── F5 enable: pick starting state ──────────────────────────────────
-        if (settings_.enabled && state_ == BotState::DISABLED) {
+        if (enabled_.load() && state_ == BotState::DISABLED) {
             if (in_pit_lane || in_pit) {
                 state_ = BotState::PIT_EXIT;
                 pit_exit_timer_ = 0.f;
@@ -187,15 +187,19 @@ void Bot::controlLoop() {
                 is_active_ = true;
                 wheel_->reset();
                 controller_->reset();
-                last_collision_counter_ = 0;
+                if (own_car_mm_.valid)
+                    last_collision_counter_ =
+                        static_cast<const CarData*>(own_car_mm_.pView)->collision_counter;
                 printf("[Bot] ENABLED\n");
             }
         }
 
         // ── F5 disable: abort everything ────────────────────────────────────
-        if (!settings_.enabled && state_ != BotState::DISABLED) {
+        if (!enabled_.load() && state_ != BotState::DISABLED) {
             state_ = BotState::DISABLED;
             is_active_ = false;
+            wheel_->reset();
+            controller_->reset();
             if (!cfg_.dry_run) writeControls({0.f, 0.f, 0.f});
             printf("[Bot] DISABLED\n");
         }
@@ -277,7 +281,9 @@ void Bot::controlLoop() {
                 is_active_ = true;
                 wheel_->reset();
                 controller_->reset();
-                last_collision_counter_ = 0;
+                if (own_car_mm_.valid)
+                    last_collision_counter_ =
+                        static_cast<const CarData*>(own_car_mm_.pView)->collision_counter;
                 printf("[Bot] Clear of pit lane — ACTIVE\n");
             }
             status_.active    = false;
@@ -289,8 +295,6 @@ void Bot::controlLoop() {
         default:
             status_.active    = false;
             status_.speed_kph = speed_ms * 3.6f;
-            wheel_->reset();
-            controller_->reset();
             break;
         }
 
@@ -310,6 +314,8 @@ void Bot::planningLoop() {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
     LoopTimer timer(cfg_.planning_hz);
 
+    float px = 0, pz = 0, heading = 0, speed_ms = 0, spline_pos = 0;
+
     while (running_) {
         timer.beginFrame();
 
@@ -317,7 +323,6 @@ void Bot::planningLoop() {
         // (avoids garbage Frenet projections while car is in pit lane)
         if (!is_active_) { timer.endFrame(); continue; }
 
-        float px = 0, pz = 0, heading = 0, speed_ms = 0, spline_pos = 0;
         readOwnCar(px, pz, heading, speed_ms, spline_pos);
 
         // Update ego Frenet state
@@ -352,10 +357,7 @@ void Bot::planningLoop() {
         out.target_d   = traj.target_d;
         out.target_v   = std::max(cfg_.min_kph / 3.6f,
                                   std::min(cfg_.max_kph / 3.6f, traj.target_ds));
-        out.ego_s      = planner_->egoS();
         out.ego_d      = planner_->egoD();
-        out.close_3x   = traj.close_3x;
-        out.close_1x   = traj.close_1x;
         out.plan_dt_ms = plan_ms;
 
         { std::lock_guard<std::mutex> lk(plan_mutex_); latest_plan_ = out; }
@@ -379,12 +381,8 @@ void Bot::hotkeyLoop() {
         if (PeekMessage(&msg, nullptr, WM_HOTKEY, WM_HOTKEY, PM_REMOVE)) {
             switch (msg.wParam) {
             case 1:
-                settings_.enabled = !settings_.enabled;
-                if (settings_.enabled) {
-                    wheel_->reset();
-                    controller_->reset();
-                }
-                printf("[Bot] %s\n", settings_.enabled ? "ENABLED" : "DISABLED");
+                enabled_ = !enabled_.load();
+                printf("[Bot] hotkey %s\n", enabled_.load() ? "ENABLED" : "DISABLED");
                 break;
             case 2:
                 settings_.humanization = std::min(1.f, settings_.humanization + 0.1f);
@@ -523,7 +521,12 @@ void Bot::readSettings() {
     if (s->safety_margin_m >= 0.5f && s->safety_margin_m <= 5.f)
         settings_.safety_margin_m = s->safety_margin_m;
 
-    wheel_->setParams(settings_.smoothness, settings_.humanization);
+    static float cached_smooth = -1.f, cached_hum = -1.f;
+    if (settings_.smoothness != cached_smooth || settings_.humanization != cached_hum) {
+        wheel_->setParams(settings_.smoothness, settings_.humanization);
+        cached_smooth = settings_.smoothness;
+        cached_hum    = settings_.humanization;
+    }
 }
 
 void Bot::writeStatus() {
@@ -567,7 +570,7 @@ void Bot::tickUDP() {
         buf[n] = '\0';
         // Simple key=value protocol: "enabled=1", "hum=0.8", "speed=170"
         if (strncmp(buf, "enabled=", 8) == 0)
-            settings_.enabled = buf[8] == '1';
+            enabled_ = (buf[8] == '1');
         else if (strncmp(buf, "hum=", 4) == 0)
             settings_.humanization = static_cast<float>(std::clamp(atof(buf+4), 0.0, 1.0));
         else if (strncmp(buf, "smooth=", 7) == 0)

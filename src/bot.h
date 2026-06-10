@@ -41,10 +41,7 @@ struct TrafficSlot {
 struct PlanOutput {
     float target_d   = 0.f;
     float target_v   = 44.f; // m/s
-    float ego_s      = 0.f;  // ego Frenet s (for logging, avoids cross-thread planner access)
-    float ego_d      = 0.f;  // ego Frenet d
-    int   close_3x   = 0;
-    int   close_1x   = 0;
+    float ego_d      = 0.f;  // ego Frenet d (for status/logging)
     float plan_dt_ms = 0.f;
 };
 
@@ -117,6 +114,7 @@ private:
     // State
     std::atomic<bool>  running_{ false };
     std::atomic<bool>  is_active_{ false }; // true only while state_ == ACTIVE; read by planningLoop
+    std::atomic<bool>  enabled_{ false };   // F5 toggle; written by hotkeyLoop, read by controlLoop
     BotState state_              = BotState::DISABLED;
     float    crashed_timer_      = 0.f;
     float    pit_exit_timer_     = 0.f;

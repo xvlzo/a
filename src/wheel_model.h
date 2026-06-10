@@ -69,7 +69,6 @@ private:
     // RNG
     std::mt19937 rng_{ std::random_device{}() };
     std::normal_distribution<float> gauss_{ 0.f, 1.f };
-    std::uniform_real_distribution<float> uniform_{ 0.f, 1.f };
 
     float applyPedalFilter(float target, float current, float dt, float max_rate);
 };
