@@ -2,9 +2,7 @@
 #include <csignal>
 #include <cstring>
 #include <string>
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include "bot.h"
+#include "bot.h"  // bot.h includes winsock2.h then windows.h in correct order
 
 static Bot* g_bot = nullptr;
 
@@ -87,6 +85,6 @@ int main(int argc, char* argv[]) {
     bot.run();  // blocks until F5 off + Ctrl-C
 
     printf("[main] Done. 3x passes: %d  1x passes: %d\n",
-           0, 0); // TODO: expose from bot
+           bot.totalPasses3x(), bot.totalPasses1x());
     return 0;
 }

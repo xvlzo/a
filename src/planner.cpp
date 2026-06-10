@@ -120,14 +120,32 @@ static float wrapAngle(float a) {
 
 void FrenetPlanner::updateEgo(float wx, float wz, float speed_ms,
                                float heading, int hint_idx) {
+    auto now = std::chrono::steady_clock::now();
+
     FrenetState fs = spline_.project(wx, wz, hint_idx, 80);
     hint_idx_ = fs.idx;
     ego_s_ = fs.s;
     ego_d_ = fs.d;
 
     float herr = wrapAngle(heading - fs.road_heading);
-    ego_ds_ = speed_ms * std::cos(herr);
-    ego_dd_ = speed_ms * std::sin(herr);
+    float new_ds = speed_ms * std::cos(herr);
+    float new_dd = speed_ms * std::sin(herr);
+
+    if (!first_update_) {
+        float dt = std::chrono::duration<float>(now - last_update_).count();
+        if (dt > 0.001f && dt < 0.5f) {
+            ego_dds_ = (new_ds - prev_ego_ds_) / dt;
+            ego_ddd_ = (new_dd - prev_ego_dd_) / dt;
+        }
+    } else {
+        first_update_ = false;
+    }
+
+    ego_ds_      = new_ds;
+    ego_dd_      = new_dd;
+    prev_ego_ds_ = new_ds;
+    prev_ego_dd_ = new_dd;
+    last_update_ = now;
 }
 
 std::vector<float> FrenetPlanner::buildDCandidates(

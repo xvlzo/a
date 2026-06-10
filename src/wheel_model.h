@@ -71,6 +71,5 @@ private:
     std::normal_distribution<float> gauss_{ 0.f, 1.f };
     std::uniform_real_distribution<float> uniform_{ 0.f, 1.f };
 
-    float sCurve(float x) const;
     float applyPedalFilter(float target, float current, float dt, float max_rate);
 };

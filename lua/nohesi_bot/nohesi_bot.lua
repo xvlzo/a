@@ -7,7 +7,13 @@
     assettocorsa/apps/lua/nohesi_bot/
 ]]
 
-local socket = require('socket')
+local socket = (function()
+    local ok, s = pcall(require, 'socket')
+    if ok then return s end
+    ok, s = pcall(require, 'shared/socket')
+    if ok then return s end
+    error('No socket library found — install lua-socket or check CSP version')
+end)()
 
 -- ── UDP connection ────────────────────────────────────────────────────────────
 local udp = socket.udp()
@@ -87,12 +93,9 @@ function script.update(dt)
 end
 
 -- ── Draw overlay ──────────────────────────────────────────────────────────────
-function script.draw()
-    local ui = ac.ui or require('ui')
-
-    -- Window position: top-left, semi-transparent
-    ui.beginTransparentWindow('nohesi_bot', vec2(10, 50), vec2(230, 220), true)
-
+-- CSP app callback: script.windowMain(dt) is called each frame inside the app window.
+-- 'ui' is a CSP global — do not require() or alias it.
+function script.windowMain(dt)
     -- ── Header ──────────────────────────────────────────────────────────────
     local bot_color = status.on and rgbm(0.2, 1.0, 0.3, 1) or rgbm(1, 0.3, 0.3, 1)
     local conn_str  = connected and '' or ' [NO CONN]'
@@ -142,8 +145,6 @@ function script.draw()
         settings.target_kph = v_new
         dirty = true
     end
-
-    ui.endTransparentWindow()
 end
 
 -- ── Keyboard shortcut: F5 inside AC window ───────────────────────────────────

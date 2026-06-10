@@ -3,6 +3,7 @@
 #include <vector>
 #include <array>
 #include <cmath>
+#include <chrono>
 
 // Frenet-frame trajectory planner (Werling 2010).
 //
@@ -124,6 +125,11 @@ private:
     float ego_dds_ = 0.f;
     float ego_ddd_ = 0.f;
     int   hint_idx_ = 0;
+
+    float prev_ego_ds_ = 0.f;
+    float prev_ego_dd_ = 0.f;
+    std::chrono::steady_clock::time_point last_update_{};
+    bool  first_update_ = true;
 
     // Build d-target candidates (centre-line + scoring band offsets)
     std::vector<float> buildDCandidates(const std::vector<TrafficCar>& traffic) const;

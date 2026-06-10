@@ -1,5 +1,6 @@
 #pragma once
 #define WIN32_LEAN_AND_MEAN
+#include <winsock2.h>  // must precede windows.h to avoid redefinition errors
 #include <windows.h>
 #include <atomic>
 #include <thread>
@@ -40,6 +41,8 @@ struct TrafficSlot {
 struct PlanOutput {
     float target_d   = 0.f;
     float target_v   = 44.f; // m/s
+    float ego_s      = 0.f;  // ego Frenet s (for logging, avoids cross-thread planner access)
+    float ego_d      = 0.f;  // ego Frenet d
     int   close_3x   = 0;
     int   close_1x   = 0;
     float plan_dt_ms = 0.f;
@@ -72,6 +75,9 @@ public:
     bool init();
     void run();    // blocks until stop() called
     void stop();
+
+    int totalPasses3x() const { return passes_3x_total_.load(); }
+    int totalPasses1x() const { return passes_1x_total_.load(); }
 
 private:
     Config cfg_;
@@ -108,8 +114,8 @@ private:
     // Logger
     std::ofstream      log_file_;
     std::mutex         log_mutex_;
-    int                passes_3x_total_ = 0;
-    int                passes_1x_total_ = 0;
+    std::atomic<int>   passes_3x_total_{ 0 };
+    std::atomic<int>   passes_1x_total_{ 0 };
 
     // UDP socket for Lua overlay
     SOCKET udp_sock_ = INVALID_SOCKET;

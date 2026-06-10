@@ -64,12 +64,6 @@ void WheelModel::reset() {
     delay_head_ = 0;
 }
 
-float WheelModel::sCurve(float x) const {
-    // Smoothstep: 3x² - 2x³
-    x = std::clamp(x, 0.f, 1.f);
-    return x * x * (3.f - 2.f * x);
-}
-
 // First-order IIR filter on pedal value with rate limiting
 // max_rate: max change per second
 float WheelModel::applyPedalFilter(float target, float current, float dt, float max_rate) {

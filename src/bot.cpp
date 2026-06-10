@@ -1,3 +1,4 @@
+// winsock2.h is already included transitively via bot.h (before windows.h)
 #include "bot.h"
 #include "timer.h"
 #include <cstdio>
@@ -6,7 +7,6 @@
 #include <algorithm>
 #include <sstream>
 #include <iomanip>
-#include <winsock2.h>
 #include <ws2tcpip.h>
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "winmm.lib")
@@ -192,15 +192,20 @@ void Bot::controlLoop() {
             if (!cfg_.dry_run)
                 writeControls(wheel_out);
 
-            // Update status
-            status_.active       = true;
-            status_.speed_kph    = speed_ms * 3.6f;
-            status_.target_kph   = target_v * 3.6f;
-            status_.target_d     = target_d;
-            status_.ego_d        = planner_->egoD();
+            // Log at ~33 Hz
+            float frame_ms = static_cast<float>(timer.frameElapsed() * 1000.0);
+            logFrame(wheel_out, raw, frame_ms);
+
+            // Update status (all writes from control thread — no data race)
+            status_.active          = true;
+            status_.speed_kph       = speed_ms * 3.6f;
+            status_.target_kph      = target_v * 3.6f;
+            status_.target_d        = target_d;
+            status_.ego_d           = plan.ego_d;   // from plan handoff, not planner directly
             status_.cross_track_err = raw.cte;
-            status_.passes_3x    = passes_3x_total_;
-            status_.passes_1x    = passes_1x_total_;
+            status_.passes_3x       = passes_3x_total_.load();
+            status_.passes_1x       = passes_1x_total_.load();
+            status_.plan_dt_ms      = plan.plan_dt_ms;
         } else {
             status_.active = false;
             status_.speed_kph = speed_ms * 3.6f;
@@ -235,6 +240,13 @@ void Bot::planningLoop() {
         // Read + project traffic
         auto traffic = readTraffic();
 
+        // Collision detection — if hit, reset accumulated score
+        if (collisionDetected(traffic, planner_->egoD())) {
+            passes_3x_total_.store(0);
+            passes_1x_total_.store(0);
+            printf("[Bot] Collision detected — score reset!\n");
+        }
+
         // Adapt speed for tight gaps
         float target_v = cfg_.target_kph / 3.6f;
         for (auto& tc : traffic) {
@@ -251,9 +263,9 @@ void Bot::planningLoop() {
         Trajectory traj = planner_->plan(traffic, target_v);
         LARGE_INTEGER t1; QueryPerformanceCounter(&t1);
         float plan_ms = static_cast<float>(
-            (t1.QuadPart - t0.QuadPart) * 1000.0 / LoopTimer::frequency());
+            (t1.QuadPart - t0.QuadPart) * 1000.0 / timer.freqQpc());
 
-        // Commit pass counts
+        // Commit pass counts (atomic — safe across threads)
         passes_3x_total_ += traj.close_3x;
         passes_1x_total_ += traj.close_1x;
 
@@ -261,13 +273,14 @@ void Bot::planningLoop() {
         out.target_d   = traj.target_d;
         out.target_v   = std::max(cfg_.min_kph / 3.6f,
                                   std::min(cfg_.max_kph / 3.6f, traj.target_ds));
+        out.ego_s      = planner_->egoS();
+        out.ego_d      = planner_->egoD();
         out.close_3x   = traj.close_3x;
         out.close_1x   = traj.close_1x;
         out.plan_dt_ms = plan_ms;
 
         { std::lock_guard<std::mutex> lk(plan_mutex_); latest_plan_ = out; }
-
-        status_.plan_dt_ms = plan_ms;
+        // plan_dt_ms is picked up by control thread via PlanOutput — no direct status_ write here
 
         timer.endFrame();
     }
@@ -339,8 +352,14 @@ bool Bot::readOwnCar(float& px, float& pz, float& heading,
         auto* p = static_cast<const SPageFilePhysics*>(physics_mm_.pView);
         heading  = p->heading;
         speed_ms = p->speedKmh / 3.6f;
-        // Position not available from acpmf_physics — use last known
-        spline_pos = 0.f;
+        // Estimate world position from normalizedCarPosition + spline
+        if (graphics_mm_.valid) {
+            auto* g = static_cast<const SPageFileGraphic*>(graphics_mm_.pView);
+            float norm = g->normalizedCarPosition;
+            float est_s = norm * spline_.total_length;
+            spline_.frenetToWorld(est_s, 0.f, px, pz);
+            spline_pos = norm;
+        }
         return true;
     }
     return false;
@@ -435,28 +454,36 @@ void Bot::tickUDP() {
     if (udp_sock_ == INVALID_SOCKET) return;
 
     // Receive settings from Lua (non-blocking)
+    // lua_from persists between calls so we always know where to reply
+    static sockaddr_in lua_from{};
+    static bool lua_connected = false;
+    static int  lua_from_len  = sizeof(lua_from);
+
     char buf[256];
-    sockaddr_in from{};
-    int flen = sizeof(from);
+    sockaddr_in recv_from{};
+    int rflen = sizeof(recv_from);
     int n = recvfrom(udp_sock_, buf, sizeof(buf)-1, 0,
-                     reinterpret_cast<sockaddr*>(&from), &flen);
+                     reinterpret_cast<sockaddr*>(&recv_from), &rflen);
     if (n > 0) {
+        lua_from      = recv_from;
+        lua_from_len  = rflen;
+        lua_connected = true;
         buf[n] = '\0';
         // Simple key=value protocol: "enabled=1", "hum=0.8", "speed=170"
         if (strncmp(buf, "enabled=", 8) == 0)
             settings_.enabled = buf[8] == '1';
         else if (strncmp(buf, "hum=", 4) == 0)
-            settings_.humanization = std::clamp(atof(buf+4), 0.0, 1.0);
+            settings_.humanization = static_cast<float>(std::clamp(atof(buf+4), 0.0, 1.0));
         else if (strncmp(buf, "smooth=", 7) == 0)
-            settings_.smoothness = std::clamp(atof(buf+7), 0.0, 1.0);
+            settings_.smoothness = static_cast<float>(std::clamp(atof(buf+7), 0.0, 1.0));
         else if (strncmp(buf, "speed=", 6) == 0)
-            settings_.target_kph = std::clamp(atof(buf+6), 80.0, 220.0);
+            settings_.target_kph = static_cast<float>(std::clamp(atof(buf+6), 80.0, 220.0));
         wheel_->setParams(settings_.smoothness, settings_.humanization);
     }
 
     // Send status to Lua every ~200ms (every ~67 control frames at 333 Hz)
     static int tick = 0;
-    if (++tick % 67 == 0) {
+    if (++tick % 67 == 0 && lua_connected) {
         char msg[256];
         snprintf(msg, sizeof(msg),
                  "speed=%.1f|target=%.1f|d=%.2f|3x=%d|1x=%d|on=%d",
@@ -464,7 +491,7 @@ void Bot::tickUDP() {
                  status_.target_d,  status_.passes_3x,
                  status_.passes_1x, status_.active ? 1 : 0);
         sendto(udp_sock_, msg, static_cast<int>(strlen(msg)), 0,
-               reinterpret_cast<sockaddr*>(&from), flen);
+               reinterpret_cast<const sockaddr*>(&lua_from), lua_from_len);
     }
 }
 
@@ -492,7 +519,7 @@ void Bot::logFrame(const WheelOutput& out, const ControlDemand& raw, float dt_ms
              "\"thr\":%.3f,\"brk\":%.3f,\"cte\":%.3f,\"dt\":%.2f}\n",
              static_cast<float>(GetTickCount64()) / 1000.f,
              status_.speed_kph,
-             planner_->egoD(),
+             status_.ego_d,   // read from status (set by control thread, no race)
              out.steer, out.throttle, out.brake,
              raw.cte, dt_ms);
     log_file_ << buf;
