@@ -428,6 +428,7 @@ void Bot::planningLoop() {
 
         // On first active frame: full-scan to find correct hint and verify direction.
         if (!spline_dir_checked) {
+            printf("[Bot] World pos: x=%.2f  z=%.2f  heading=%.3f rad\n", px, pz, heading);
             FrenetState fs = spline_.project(px, pz, 0, spline_.size() / 2);
             float herr = heading - fs.road_heading;
             while (herr >  3.14159f) herr -= 6.28318f;
