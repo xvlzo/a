@@ -20,14 +20,12 @@ import ctypes
 import shutil
 
 
-# ── Read car position from Car0.v0 shared memory ──────────────────────────────
+# ── Shared memory helpers ──────────────────────────────────────────────────────
 
-def read_car_pos():
-    """Returns (x, z) from Car0.v0 mmap or None if not available."""
+def _open_mmap(name, size):
+    """Open a named Windows shared memory and return bytes, or None."""
     try:
-        INVALID_HANDLE = ctypes.c_void_p(-1).value
         FILE_MAP_READ = 4
-
         OpenFileMapping = ctypes.windll.kernel32.OpenFileMappingW
         OpenFileMapping.restype = ctypes.c_void_p
         MapViewOfFile = ctypes.windll.kernel32.MapViewOfFile
@@ -35,30 +33,68 @@ def read_car_pos():
         UnmapViewOfFile = ctypes.windll.kernel32.UnmapViewOfFile
         CloseHandle = ctypes.windll.kernel32.CloseHandle
 
-        name = "Car0.v0"
-        size = 672  # sizeof(CarData)
-
         h = OpenFileMapping(FILE_MAP_READ, False, name)
-        if not h or h == INVALID_HANDLE:
+        if not h:
             return None
-
         view = MapViewOfFile(h, FILE_MAP_READ, 0, 0, size)
         if not view:
             CloseHandle(h)
             return None
-
         buf = (ctypes.c_char * size).from_address(view)
         data = bytes(buf)
         UnmapViewOfFile(view)
         CloseHandle(h)
+        return data
+    except Exception:
+        return None
 
-        # CarData.position is at offset 88: float x, y, z
-        x, y, z = struct.unpack_from('<fff', data, 88)
+
+# ── Read car position ──────────────────────────────────────────────────────────
+
+def read_car_pos():
+    """
+    Returns (x, z) of the player car, or None.
+    Tries CSP Car0.v0 first, then AC's acpmf_graphics (always available).
+    """
+    # 1. CSP mmap (only exists after bot creates CarControls0.v0)
+    data = _open_mmap("Car0.v0", 672)
+    if data:
+        x, y, z = struct.unpack_from('<fff', data, 88)  # CarData.position @ 88
+        print(f"[source] Car0.v0")
         return (x, z)
 
-    except Exception as e:
-        print(f"[warn] Could not read Car0.v0: {e}")
-        return None
+    # 2. AC built-in graphics shared memory (always present when AC is running)
+    # SPageFileGraphics layout (wchar_t strings → 2 bytes/char on Windows):
+    #   0   packetId        int
+    #   4   status          int
+    #   8   session         int
+    #  12   currentTime     wchar_t[15] = 30 bytes
+    #  42   lastTime        wchar_t[15] = 30 bytes
+    #  72   bestTime        wchar_t[15] = 30 bytes
+    # 102   split           wchar_t[15] = 30 bytes
+    # 132   completedLaps   int
+    # 136   position        int
+    # 140   iCurrentTime    int
+    # 144   iLastTime       int
+    # 148   iBestTime       int
+    # 152   sessionTimeLeft float
+    # 156   distanceTraveled float
+    # 160   isInPit         int
+    # 164   currentSectorIndex int
+    # 168   lastSectorTime  int
+    # 172   numberOfLaps    int
+    # 176   tyreCompound    wchar_t[4][33] = 264 bytes
+    # 440   replayTimeMultiplier float
+    # 444   normalizedCarPosition float
+    # 448   activeCars      int
+    # 452   carCoordinates  float[60][3]  ← player = [0]
+    data = _open_mmap("acpmf_graphics", 2048)
+    if data:
+        x, y, z = struct.unpack_from('<fff', data, 452)  # carCoordinates[0]
+        print(f"[source] acpmf_graphics (AC built-in)")
+        return (x, z)
+
+    return None
 
 
 # ── Parse .ai files ────────────────────────────────────────────────────────────
