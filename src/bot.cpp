@@ -426,19 +426,21 @@ void Bot::planningLoop() {
 
         readOwnCar(px, pz, heading, speed_ms, spline_pos);
 
-        // On first active frame, verify spline direction matches car heading.
-        // If off by more than 90°, reverse the spline in-place.
+        // On first active frame: full-scan to find correct hint and verify direction.
         if (!spline_dir_checked) {
-            FrenetState fs = spline_.project(px, pz, 0, 200);
+            FrenetState fs = spline_.project(px, pz, 0, spline_.size() / 2);
             float herr = heading - fs.road_heading;
             while (herr >  3.14159f) herr -= 6.28318f;
             while (herr < -3.14159f) herr += 6.28318f;
-            if (std::abs(herr) > 1.5708f) { // > 90°
+            if (std::abs(herr) > 1.5708f) {
                 spline_.reverse();
+                fs = spline_.project(px, pz, 0, spline_.size() / 2);
                 printf("[Bot] Spline direction auto-corrected (was reversed)\n");
             } else {
                 printf("[Bot] Spline direction OK\n");
             }
+            // Warm up planner hint so first projection uses the correct index
+            planner_->updateEgo(px, pz, speed_ms, heading, fs.idx);
             spline_dir_checked = true;
         }
 

@@ -48,8 +48,9 @@ ControlDemand StanleyController::update(float wx, float wz,
     // Heading error relative to road
     float herr = wrapAngle(heading - fs.road_heading);
 
-    // Stanley: δ = heading_err + arctan(ke * cte / (v + ks))
-    float stanley = std::atan2(ke_ * cte, speed_ms + ks_);
+    // Stanley: δ = heading_err - arctan(ke * cte / (v + ks))
+    // Negative sign: in AC steer<0=right, d>0=left, so CTE correction must be negated
+    float stanley = -std::atan2(ke_ * cte, speed_ms + ks_);
     float raw_rad = herr + stanley;
     raw_rad = std::clamp(raw_rad, -max_steer_rad_, max_steer_rad_);
     float steer = raw_rad / max_steer_rad_; // normalise to [-1, 1]
