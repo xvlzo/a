@@ -43,9 +43,12 @@ def read_car_pos():
     # 1. CSP mmap (only exists after bot creates CarControls0.v0)
     data = _open_mmap("Car0.v0", 672)
     if data:
+        packet_id, = struct.unpack_from('<i', data, 0)
         x, y, z = struct.unpack_from('<fff', data, 88)  # CarData.position @ 88
-        print(f"[source] Car0.v0")
-        return (x, z)
+        if packet_id != 0 and (x != 0.0 or z != 0.0):
+            print(f"[source] Car0.v0  (packet_id={packet_id})")
+            return (x, z)
+        print(f"[info] Car0.v0 found but data is zero (bot not running yet) — trying acpmf_graphics")
 
     # 2. AC built-in graphics shared memory (always present when AC is running)
     # SPageFileGraphics layout (wchar_t strings → 2 bytes/char on Windows):
@@ -75,8 +78,10 @@ def read_car_pos():
     data = _open_mmap("acpmf_graphics", 2048)
     if data:
         x, y, z = struct.unpack_from('<fff', data, 452)  # carCoordinates[0]
-        print(f"[source] acpmf_graphics (AC built-in)")
-        return (x, z)
+        if x != 0.0 or z != 0.0:
+            print(f"[source] acpmf_graphics  x={x:.1f}  z={z:.1f}")
+            return (x, z)
+        print(f"[warn] acpmf_graphics also returned (0,0) — are you in a session on track?")
 
     return None
 
