@@ -13,8 +13,8 @@ void WheelModel::setParams(float smoothness, float humanization) {
     ou_sigma_ = humanization * 0.018f;
     ou_theta_ = 2.0f + (1.f - humanization) * 3.0f; // faster reversion when less human
 
-    // Reaction delay: 0 humanization = 8 samples (~24 ms), 1.0 = 55 samples (~165 ms)
-    delay_samples_ = static_cast<int>(8.f + humanization * 47.f);
+    // Reaction delay: 0 humanization = 8 samples (~24 ms), 1.0 = 23 samples (~69 ms)
+    delay_samples_ = static_cast<int>(8.f + humanization * 15.f);
     delay_samples_ = std::min(delay_samples_, kDelayBuf - 1);
 }
 
