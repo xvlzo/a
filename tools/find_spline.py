@@ -25,25 +25,9 @@ import shutil
 def _open_mmap(name, size):
     """Open a named Windows shared memory and return bytes, or None."""
     try:
-        FILE_MAP_READ = 4
-        OpenFileMapping = ctypes.windll.kernel32.OpenFileMappingW
-        OpenFileMapping.restype = ctypes.c_void_p
-        MapViewOfFile = ctypes.windll.kernel32.MapViewOfFile
-        MapViewOfFile.restype = ctypes.c_void_p
-        UnmapViewOfFile = ctypes.windll.kernel32.UnmapViewOfFile
-        CloseHandle = ctypes.windll.kernel32.CloseHandle
-
-        h = OpenFileMapping(FILE_MAP_READ, False, name)
-        if not h:
-            return None
-        view = MapViewOfFile(h, FILE_MAP_READ, 0, 0, size)
-        if not view:
-            CloseHandle(h)
-            return None
-        buf = (ctypes.c_char * size).from_address(view)
-        data = bytes(buf)
-        UnmapViewOfFile(view)
-        CloseHandle(h)
+        m = mmap.mmap(-1, size, tagname=name, access=mmap.ACCESS_READ)
+        data = m.read(size)
+        m.close()
         return data
     except Exception:
         return None
@@ -237,8 +221,10 @@ def main():
             cx, cz = pos
             print(f"Car0.v0 position: x={cx:.1f}  z={cz:.1f}")
         else:
-            print("ERROR: AC is not running (Car0.v0 not found).")
-            print("Either start AC or pass --pos <x> <z>")
+            print("ERROR: Could not read car position.")
+            print("  Tried: Car0.v0, acpmf_graphics")
+            print("  Make sure AC is running and you're in a session on track.")
+            print("  Or pass position manually: --pos <x> <z>")
             sys.exit(1)
 
     # Scan folder
