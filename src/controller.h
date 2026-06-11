@@ -57,4 +57,6 @@ private:
     PID   speed_pid_;
     int   last_hint_ = 0;
     float prev_steer_ = 0.f;
+    float prev_herr_  = 0.f;
+    bool  first_herr_ = true;
 };

@@ -48,10 +48,15 @@ ControlDemand StanleyController::update(float wx, float wz,
     // Heading error relative to road
     float herr = wrapAngle(heading - fs.road_heading);
 
+    // Derivative of heading error — damps yaw oscillation
+    float dherr = first_herr_ ? 0.f : wrapAngle(herr - prev_herr_) / dt;
+    prev_herr_  = herr;
+    first_herr_ = false;
+
     // Stanley: δ = heading_err - arctan(ke * cte / (v + ks))
     // Negative sign: in AC steer<0=right, d>0=left, so CTE correction must be negated
     float stanley = -std::atan2(ke_ * cte, speed_ms + ks_);
-    float raw_rad = herr + stanley;
+    float raw_rad = herr - 0.15f * dherr + stanley;
     raw_rad = std::clamp(raw_rad, -max_steer_rad_, max_steer_rad_);
     float steer_raw = raw_rad / max_steer_rad_; // normalise to [-1, 1]
     // Low-pass filter: damps oscillation without killing responsiveness
@@ -69,4 +74,6 @@ ControlDemand StanleyController::update(float wx, float wz,
 void StanleyController::reset() {
     speed_pid_.reset();
     prev_steer_ = 0.f;
+    prev_herr_  = 0.f;
+    first_herr_ = true;
 }
