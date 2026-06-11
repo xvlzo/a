@@ -69,24 +69,9 @@ def write_v7(points):
         out += struct.pack('<f',   length)
         out += struct.pack('<i',   i)
 
-    # Section 2: extra data (72 bytes each)
-    out += struct.pack('<i', N)
-    for p in points:
-        # Compute a rough forward vector from position delta
-        out += struct.pack('<f', 0.0)              # speed
-        out += struct.pack('<f', 0.0)              # gas
-        out += struct.pack('<f', 0.0)              # brake
-        out += struct.pack('<f', 0.0)              # obsoleteLatG
-        out += struct.pack('<f', p['radius'])      # radius
-        out += struct.pack('<f', 0.0)              # sideLeft
-        out += struct.pack('<f', 0.0)              # sideRight
-        out += struct.pack('<f', p['camber'])      # camber
-        out += struct.pack('<f', p['direction'])   # direction
-        out += struct.pack('<fff', 0.0, 1.0, 0.0) # normal (up)
-        out += struct.pack('<f', 0.0)              # detailLength
-        out += struct.pack('<fff', 0.0, 0.0, 1.0) # forward
-        out += struct.pack('<f', 0.0)              # tag
-        out += struct.pack('<f', 0.0)              # grade
+    # No extras section — spline.cpp will compute headings from position
+    # deltas which is correct. Writing fake forward vectors causes wrong headings.
+    out += struct.pack('<i', 0)
 
     return bytes(out)
 
