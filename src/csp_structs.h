@@ -42,7 +42,6 @@ struct CarControls {
     bool   autoclutch_on_start;   // 41
     bool   autoclutch_on_change;  // 42
     bool   autoblip_active;       // 43
-    uint8_t _pad;                 // 43 → align to 44
     Vec3   teleport_pos;          // 44
     Vec3   teleport_dir;          // 56
     bool   autoshift_active;      // 68

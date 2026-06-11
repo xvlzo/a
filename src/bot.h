@@ -1,5 +1,6 @@
 #pragma once
 #define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include <winsock2.h>  // must precede windows.h to avoid redefinition errors
 #include <windows.h>
 #include <atomic>
