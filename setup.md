@@ -18,11 +18,12 @@
 ENABLED=1
 ```
 
-**Track surfaces.ini** — for Shutoko Revival Project:
+**Track surfaces.ini** — SRP is a multi-layout track, so there is no root `data/` folder.
+Open the track directory and find each layout subfolder that has a `data/` inside it:
 ```
-assettocorsa/content/tracks/shuto_revival_project_beta/data/surfaces.ini
+assettocorsa/content/tracks/shuto_revival_project_beta/<layout>/data/surfaces.ini
 ```
-Add:
+Add to each layout you plan to run on:
 ```ini
 [_EXTRA_PERMISSIONS]
 ALLOW_CUSTOM_AI_MANIPULATION=1
