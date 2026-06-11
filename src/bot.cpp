@@ -415,15 +415,32 @@ void Bot::planningLoop() {
     LoopTimer timer(cfg_.planning_hz);
 
     float px = 0, pz = 0, heading = 0, speed_ms = 0, spline_pos = 0;
+    bool spline_dir_checked = false;
 
     while (running_) {
         timer.beginFrame();
 
         // Only run full planning when on-track and ACTIVE
         // (avoids garbage Frenet projections while car is in pit lane)
-        if (!is_active_) { timer.endFrame(); continue; }
+        if (!is_active_) { spline_dir_checked = false; timer.endFrame(); continue; }
 
         readOwnCar(px, pz, heading, speed_ms, spline_pos);
+
+        // On first active frame, verify spline direction matches car heading.
+        // If off by more than 90°, reverse the spline in-place.
+        if (!spline_dir_checked) {
+            FrenetState fs = spline_.project(px, pz, 0, 200);
+            float herr = heading - fs.road_heading;
+            while (herr >  3.14159f) herr -= 6.28318f;
+            while (herr < -3.14159f) herr += 6.28318f;
+            if (std::abs(herr) > 1.5708f) { // > 90°
+                spline_.reverse();
+                printf("[Bot] Spline direction auto-corrected (was reversed)\n");
+            } else {
+                printf("[Bot] Spline direction OK\n");
+            }
+            spline_dir_checked = true;
+        }
 
         // Update ego Frenet state
         planner_->updateEgo(px, pz, speed_ms, heading, planner_->hintIdx());

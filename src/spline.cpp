@@ -65,6 +65,23 @@ bool Spline::load(const std::string& path) {
     return true;
 }
 
+void Spline::reverse() {
+    std::reverse(pts.begin(), pts.end());
+    // Recompute cumulative arc lengths from scratch
+    float cum = 0.f;
+    for (int i = 0; i < (int)pts.size(); ++i) {
+        pts[i].arc_length = cum;
+        if (i + 1 < (int)pts.size()) {
+            float dx = pts[i+1].x - pts[i].x;
+            float dz = pts[i+1].z - pts[i].z;
+            cum += std::sqrt(dx*dx + dz*dz);
+        }
+    }
+    total_length = cum;
+    ext.clear(); // extras are no longer valid after reversal
+    buildHeadings();
+}
+
 void Spline::buildHeadings() {
     int N = size();
     headings.resize(N);
