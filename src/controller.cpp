@@ -55,7 +55,7 @@ ControlDemand StanleyController::update(float wx, float wz,
 
     // Yaw-rate damping: counteracts heading oscillation using smooth measured yaw rate.
     // yaw_rate_rad_s > 0 = turning left; in AC steer>0 = left, so subtract to oppose.
-    float raw_rad = herr + stanley - 0.8f * yaw_rate_rad_s;
+    float raw_rad = herr + stanley - 0.3f * yaw_rate_rad_s;
     raw_rad = std::clamp(raw_rad, -max_steer_rad_, max_steer_rad_);
     float steer_raw = raw_rad / max_steer_rad_; // normalise to [-1, 1]
     // Light IIR to filter frame-to-frame noise without adding meaningful lag
