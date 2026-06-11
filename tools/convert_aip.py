@@ -92,9 +92,11 @@ def write_v7(points):
 
 
 def main():
-    if len(sys.argv) != 3:
-        print("Usage: python convert_aip.py <input.ai> <output.ai>")
+    if len(sys.argv) < 3:
+        print("Usage: python convert_aip.py <input.ai> <output.ai> [--reverse]")
         sys.exit(1)
+
+    reverse = '--reverse' in sys.argv
 
     with open(sys.argv[1], 'rb') as f:
         data = f.read()
@@ -109,6 +111,9 @@ def main():
         sys.exit(1)
 
     points = read_vn1(data)
+    if reverse:
+        points = points[::-1]
+        print("Reversed spline direction")
     out = write_v7(points)
 
     with open(sys.argv[2], 'wb') as f:
