@@ -53,7 +53,10 @@ ControlDemand StanleyController::update(float wx, float wz,
     float stanley = -std::atan2(ke_ * cte, speed_ms + ks_);
     float raw_rad = herr + stanley;
     raw_rad = std::clamp(raw_rad, -max_steer_rad_, max_steer_rad_);
-    float steer = raw_rad / max_steer_rad_; // normalise to [-1, 1]
+    float steer_raw = raw_rad / max_steer_rad_; // normalise to [-1, 1]
+    // Low-pass filter: damps oscillation without killing responsiveness
+    float steer = 0.25f * steer_raw + 0.75f * prev_steer_;
+    prev_steer_ = steer;
 
     // Longitudinal PID
     float accel = speed_pid_.update(target_v_ms - speed_ms, dt);
@@ -65,4 +68,5 @@ ControlDemand StanleyController::update(float wx, float wz,
 
 void StanleyController::reset() {
     speed_pid_.reset();
+    prev_steer_ = 0.f;
 }

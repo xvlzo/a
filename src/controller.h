@@ -30,8 +30,8 @@ private:
 class StanleyController {
 public:
     StanleyController(const Spline& spline,
-                      float ke = 2.5f,
-                      float ks = 0.5f,
+                      float ke = 1.0f,
+                      float ks = 1.0f,
                       float max_steer_deg = 30.f);
 
     void setGains(float ke, float ks) { ke_ = ke; ks_ = ks; }
@@ -56,4 +56,5 @@ private:
     float max_steer_rad_;
     PID   speed_pid_;
     int   last_hint_ = 0;
+    float prev_steer_ = 0.f;
 };
