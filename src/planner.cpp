@@ -293,8 +293,8 @@ Trajectory FrenetPlanner::plan(const std::vector<TrafficCar>& traffic,
                     traj.ds[i] = lon.ds(t);
                     traj.dd[i] = lat.dd(t);
                 }
-                traj.target_d  = traj.d[0];
-                traj.target_ds = vT;           // use planned speed, not first-step ≈ current speed
+                traj.target_d  = dT;  // expose planned lane so controller actively pursues it
+                traj.target_ds = vT;
 
                 if (!isFeasible(traj, traffic)) continue;
                 traj.feasible = true;
