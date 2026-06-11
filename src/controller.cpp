@@ -37,7 +37,8 @@ static float wrapAngle(float a) {
 ControlDemand StanleyController::update(float wx, float wz,
                                          float heading, float speed_ms,
                                          float target_d, float target_v_ms,
-                                         float dt, int hint_idx) {
+                                         float dt, int hint_idx,
+                                         float yaw_rate_rad_s) {
     FrenetState fs = spline_.project(wx, wz, hint_idx, 80);
     last_hint_ = fs.idx;
 
@@ -48,18 +49,16 @@ ControlDemand StanleyController::update(float wx, float wz,
     // Heading error relative to road
     float herr = wrapAngle(heading - fs.road_heading);
 
-    // Derivative of heading error — damps yaw oscillation
-    float dherr = first_herr_ ? 0.f : wrapAngle(herr - prev_herr_) / dt;
-    prev_herr_  = herr;
-    first_herr_ = false;
-
     // Stanley: δ = heading_err - arctan(ke * cte / (v + ks))
     // Negative sign: in AC steer<0=right, d>0=left, so CTE correction must be negated
     float stanley = -std::atan2(ke_ * cte, speed_ms + ks_);
-    float raw_rad = herr - 0.15f * dherr + stanley;
+
+    // Yaw-rate damping: counteracts heading oscillation using smooth measured yaw rate.
+    // yaw_rate_rad_s > 0 = turning left; in AC steer>0 = left, so subtract to oppose.
+    float raw_rad = herr + stanley - 0.3f * yaw_rate_rad_s;
     raw_rad = std::clamp(raw_rad, -max_steer_rad_, max_steer_rad_);
     float steer_raw = raw_rad / max_steer_rad_; // normalise to [-1, 1]
-    // Low-pass filter: damps oscillation without killing responsiveness
+    // Light IIR to filter frame-to-frame noise without adding meaningful lag
     float steer = 0.25f * steer_raw + 0.75f * prev_steer_;
     prev_steer_ = steer;
 
@@ -74,6 +73,4 @@ ControlDemand StanleyController::update(float wx, float wz,
 void StanleyController::reset() {
     speed_pid_.reset();
     prev_steer_ = 0.f;
-    prev_herr_  = 0.f;
-    first_herr_ = true;
 }

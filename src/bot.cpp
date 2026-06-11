@@ -325,10 +325,15 @@ void Bot::controlLoop() {
                 }
             }
 
+            float yaw_rate = 0.f;
+            if (own_car_mm_.valid) {
+                auto* cd = static_cast<const CarData*>(own_car_mm_.pView);
+                yaw_rate = cd->local_angular_vel.y; // rad/s, +ve = left
+            }
             ControlDemand raw = controller_->update(
                 px, pz, heading, speed_ms,
                 plan.target_d, plan.target_v, dt,
-                controller_->lastHintIdx());
+                controller_->lastHintIdx(), yaw_rate);
 
             wheel_out = wheel_->process(raw.steer, raw.throttle, raw.brake, dt);
 

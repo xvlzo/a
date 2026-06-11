@@ -39,13 +39,15 @@ public:
     // Compute desired control demand.
     // target_d: lateral offset from centre-line (Frenet d, metres)
     // target_v: target speed (m/s)
+    // yaw_rate_rad_s: car's measured yaw rate (+ve = left) for oscillation damping
     // Returns demand BEFORE wheel model humanisation.
     ControlDemand update(float wx, float wz, float heading,
                          float speed_ms,
                          float target_d,
                          float target_v_ms,
                          float dt,
-                         int hint_idx = 0);
+                         int hint_idx = 0,
+                         float yaw_rate_rad_s = 0.f);
 
     void reset();
     int lastHintIdx() const { return last_hint_; }
@@ -57,6 +59,4 @@ private:
     PID   speed_pid_;
     int   last_hint_ = 0;
     float prev_steer_ = 0.f;
-    float prev_herr_  = 0.f;
-    bool  first_herr_ = true;
 };
