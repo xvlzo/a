@@ -87,15 +87,7 @@ bool Bot::init() {
 bool Bot::openMmaps() {
     char name[256];
 
-    // Own car state (CSP)
-    snprintf(name, sizeof(name),
-             "AcTools.CSP.NewBehaviour.CustomAI.Car%d.v0", cfg_.own_car_index);
-    if (own_car_mm_.openRead(name, sizeof(CarData)))
-        printf("[Bot] Car%d.v0 opened\n", cfg_.own_car_index);
-    else
-        printf("[Bot] Car%d.v0 not found, using acpmf_physics fallback\n", cfg_.own_car_index);
-
-    // Own car controls (CSP) — we create this
+    // Own car controls (CSP) — we create this first so CSP can detect us
     snprintf(name, sizeof(name),
              "AcTools.CSP.NewBehaviour.CustomAI.CarControls%d.v0", cfg_.own_car_index);
     if (own_ctrl_mm_.openReadWrite(name, sizeof(CarControls)))
@@ -103,6 +95,19 @@ bool Bot::openMmaps() {
     else
         printf("[Bot] WARNING: CarControls%d.v0 open failed — CSP Custom AI not enabled?\n",
                cfg_.own_car_index);
+
+    // Own car state (CSP) — poll for up to 3 s; CSP may create it after seeing CarControls
+    snprintf(name, sizeof(name),
+             "AcTools.CSP.NewBehaviour.CustomAI.Car%d.v0", cfg_.own_car_index);
+    for (int i = 0; i < 30; ++i) {
+        if (own_car_mm_.openRead(name, sizeof(CarData))) break;
+        if (i == 0) printf("[Bot] Waiting for Car%d.v0...\n", cfg_.own_car_index);
+        Sleep(100);
+    }
+    if (own_car_mm_.valid)
+        printf("[Bot] Car%d.v0 opened\n", cfg_.own_car_index);
+    else
+        printf("[Bot] Car%d.v0 not found, using acpmf_physics fallback\n", cfg_.own_car_index);
 
     // AC shared memory fallback
     physics_mm_.openRead("Local\\acpmf_physics", sizeof(SPageFilePhysics));
