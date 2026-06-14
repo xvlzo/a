@@ -328,7 +328,7 @@ Trajectory FrenetPlanner::emergencyTrajectory() const {
         traj.ds[i] = lon.ds(t);
         traj.dd[i] = lat.dd(t);
     }
-    traj.target_d  = 0.f;
+    traj.target_d  = ego_d_; // hold current lane rather than snapping to centre
     traj.target_ds = decel_v;
     traj.feasible  = true;
     traj.score     = -1000.f;
