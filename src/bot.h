@@ -59,7 +59,7 @@ enum class BotState {
 class Bot {
 public:
     struct Config {
-        std::string fast_lane_path = "data/fast_lane.ai";
+        std::string fast_lane_path = "data/fast_lane.aip";
         int    own_car_index  = 0;
         int    max_traffic    = 64;
         float  control_hz     = 333.f;
