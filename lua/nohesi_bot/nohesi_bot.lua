@@ -7,18 +7,37 @@
     assettocorsa/apps/lua/nohesi_bot/
 ]]
 
+-- ── UDP connection ────────────────────────────────────────────────────────────
+-- Acquire luasocket defensively. If it isn't available, DON'T error() — that
+-- would kill the whole app so it never even appears in the app list. Instead we
+-- record the failure and surface it in the window.
+local socket_err = nil
+local udp = nil
+
 local socket = (function()
     local ok, s = pcall(require, 'socket')
-    if ok then return s end
+    if ok and s then return s end
     ok, s = pcall(require, 'shared/socket')
-    if ok then return s end
-    error('No socket library found — install lua-socket or check CSP version')
+    if ok and s then return s end
+    socket_err = 'luasocket not available in this CSP build'
+    return nil
 end)()
 
--- ── UDP connection ────────────────────────────────────────────────────────────
-local udp = socket.udp()
-udp:settimeout(0)  -- non-blocking
-udp:setpeername('127.0.0.1', 27015)
+if socket then
+    local ok, err = pcall(function()
+        udp = socket.udp()
+        udp:settimeout(0)  -- non-blocking
+        udp:setpeername('127.0.0.1', 27015)
+    end)
+    if not ok then
+        socket_err = 'socket init failed: ' .. tostring(err)
+        udp = nil
+    end
+end
+
+-- Diagnostics shown in the window
+local pkt_count = 0
+local last_ego  = { x = 0, z = 0, n = 0 }
 
 -- ── State ────────────────────────────────────────────────────────────────────
 local status = {
@@ -47,8 +66,9 @@ local connected = false
 
 -- ── Send a setting to the bot ─────────────────────────────────────────────────
 local function sendSetting(key, value)
+    if not udp then return end
     local msg = key .. '=' .. tostring(value)
-    local ok, err = udp:send(msg)
+    local ok = udp:send(msg)
     if ok then connected = true end
 end
 
@@ -83,6 +103,7 @@ end
 -- bot's convention. Traffic is filtered to within 250 m of the player.
 local TRAFFIC_RADIUS2 = 250 * 250
 local function sendTelemetry()
+    if not udp then return end
     local sim = ac.getSim()
     if not sim then return end
     local egoIdx = sim.focusedCar or 0
@@ -109,12 +130,18 @@ local function sendTelemetry()
         end
     end
     udp:send(table.concat(parts))
+    pkt_count   = pkt_count + 1
+    last_ego.x  = ego.position.x
+    last_ego.z  = ego.position.z
+    last_ego.n  = n
 end
 
 -- ── Update (called every frame by CSP) ───────────────────────────────────────
 function script.update(dt)
+    if not udp then return end  -- socket unavailable; window will show the error
+
     -- Receive status from bot
-    local line, err = udp:receive()
+    local line = udp:receive()
     if line then
         parseStatus(line)
         last_recv = os.clock()
@@ -153,6 +180,20 @@ function script.windowMain(dt)
     ui.text(string.format('NO HESI BOT  [%s]%s',
         status.on and 'ON' or 'OFF', conn_str))
     ui.popStyleColor()
+
+    ui.separator()
+
+    -- ── Link diagnostics ─────────────────────────────────────────────────────
+    if socket_err then
+        ui.pushStyleColor(ui.StyleColor.Text, rgbm(1, 0.4, 0.2, 1))
+        ui.text('SOCKET ERROR:')
+        ui.text(socket_err)
+        ui.popStyleColor()
+    else
+        ui.text(string.format('UDP sent : %d pkts', pkt_count))
+        ui.text(string.format('Ego pos  : %.0f, %.0f', last_ego.x, last_ego.z))
+        ui.text(string.format('Cars seen: %d', last_ego.n))
+    end
 
     ui.separator()
 
