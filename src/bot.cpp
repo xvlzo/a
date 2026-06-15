@@ -576,14 +576,15 @@ void Bot::planningLoop() {
 // ─── Hotkey loop ──────────────────────────────────────────────────────────────
 void Bot::hotkeyLoop() {
     // F5=toggle, F6=hum+, F7=hum-, F8=speed+, F9=speed-
+    // Num7/8/9 = calib steer/throttle/brake (F10-F12 intercepted by system/debugger)
     RegisterHotKey(nullptr, 1, 0, VK_F5);
     RegisterHotKey(nullptr, 2, 0, VK_F6);
     RegisterHotKey(nullptr, 3, 0, VK_F7);
     RegisterHotKey(nullptr, 4, 0, VK_F8);
     RegisterHotKey(nullptr, 5, 0, VK_F9);
-    RegisterHotKey(nullptr, 6, 0, VK_F10);
-    RegisterHotKey(nullptr, 7, 0, VK_F11);
-    RegisterHotKey(nullptr, 8, 0, VK_F12);
+    RegisterHotKey(nullptr, 6, 0, VK_NUMPAD7);
+    RegisterHotKey(nullptr, 7, 0, VK_NUMPAD8);
+    RegisterHotKey(nullptr, 8, 0, VK_NUMPAD9);
 
     MSG msg;
     while (running_) {
@@ -623,24 +624,24 @@ void Bot::hotkeyLoop() {
                     static_cast<BotSettings*>(settings_mm_.pView)->target_kph = settings_.target_kph;
                 printf("[Bot] Target: %.0f kph\n", settings_.target_kph);
                 break;
-            case 6: { // F10 — calibrate steer (Axle 1)
+            case 6: { // Num7 — calibrate steer
                 int next = (calib_axis_.load() == 1) ? 0 : 1;
                 calib_axis_.store(next);
-                printf("[Bot] Calib %s — STEER axis sweeping. Click 'Steering' in AC controls now.\n",
+                printf("[Bot] Calib %s — STEER sweeping. Click 'Steering' in AC controls now.\n",
                        next ? "ON" : "OFF");
                 break;
             }
-            case 7: { // F11 — calibrate throttle (Axle 2)
+            case 7: { // Num8 — calibrate throttle
                 int next = (calib_axis_.load() == 2) ? 0 : 2;
                 calib_axis_.store(next);
-                printf("[Bot] Calib %s — THROTTLE axis sweeping. Click 'Throttle' in AC controls now.\n",
+                printf("[Bot] Calib %s — THROTTLE sweeping. Click 'Throttle' in AC controls now.\n",
                        next ? "ON" : "OFF");
                 break;
             }
-            case 8: { // F12 — calibrate brake (Axle 3)
+            case 8: { // Num9 — calibrate brake
                 int next = (calib_axis_.load() == 3) ? 0 : 3;
                 calib_axis_.store(next);
-                printf("[Bot] Calib %s — BRAKE axis sweeping. Click 'Brakes' in AC controls now.\n",
+                printf("[Bot] Calib %s — BRAKE sweeping. Click 'Brakes' in AC controls now.\n",
                        next ? "ON" : "OFF");
                 break;
             }

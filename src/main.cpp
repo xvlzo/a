@@ -25,9 +25,12 @@ static void printUsage(const char* exe) {
            "  --log-dir <path>     Log directory          (default: logs)\n"
            "\n"
            "Hotkeys (active at all times):\n"
-           "  F5      Toggle bot on/off\n"
-           "  F6/F7   Humanization up/down\n"
-           "  F8/F9   Target speed +/- 10 kph\n",
+           "  F5        Toggle bot on/off\n"
+           "  F6/F7     Humanization up/down\n"
+           "  F8/F9     Target speed +/- 10 kph\n"
+           "  Num7      Calib STEER axis (sweep steer, assign in AC controls)\n"
+           "  Num8      Calib THROTTLE axis\n"
+           "  Num9      Calib BRAKE axis\n",
            exe);
 }
 
