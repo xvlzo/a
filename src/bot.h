@@ -115,8 +115,9 @@ private:
 
     // State
     std::atomic<bool>  running_{ false };
-    std::atomic<bool>  is_active_{ false }; // true only while state_ == ACTIVE; read by planningLoop
-    std::atomic<bool>  enabled_{ false };         // F5 toggle; written by hotkeyLoop, read by controlLoop
+    std::atomic<bool>  is_active_{ false };
+    std::atomic<bool>  enabled_{ false };
+    std::atomic<int>   calib_axis_{ 0 };  // 0=off 1=steer 2=throttle 3=brake (F10/F11/F12)
     std::atomic<float> live_target_kph_{ 160.f }; // written by any thread, read by planningLoop
     std::atomic<float> live_safety_margin_{ 1.2f };
     BotState state_              = BotState::DISABLED;

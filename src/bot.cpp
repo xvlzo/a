@@ -431,8 +431,17 @@ void Bot::controlLoop() {
             break;
         }
 
-        if (!cfg_.dry_run && state_ != BotState::DISABLED)
+        // Calibration mode: sweep one axis only so AC controls can detect it
+        int calib = calib_axis_.load();
+        if (calib != 0 && vctrl_.available()) {
+            float t = static_cast<float>(GetTickCount64()) / 1000.f;
+            float sweep = std::sin(t * 1.5f); // ~0.25 Hz
+            if      (calib == 1) vctrl_.update(sweep, 0.f, 0.f);  // steer only
+            else if (calib == 2) vctrl_.update(0.f, (sweep+1.f)*0.5f, 0.f); // throttle only
+            else if (calib == 3) vctrl_.update(0.f, 0.f, (sweep+1.f)*0.5f); // brake only
+        } else if (!cfg_.dry_run && state_ != BotState::DISABLED) {
             writeControls(wheel_out);
+        }
 
         status_.loop_dt_ms = static_cast<float>(timer.frameElapsed() * 1000.0);
         writeStatus();
@@ -572,6 +581,9 @@ void Bot::hotkeyLoop() {
     RegisterHotKey(nullptr, 3, 0, VK_F7);
     RegisterHotKey(nullptr, 4, 0, VK_F8);
     RegisterHotKey(nullptr, 5, 0, VK_F9);
+    RegisterHotKey(nullptr, 6, 0, VK_F10);
+    RegisterHotKey(nullptr, 7, 0, VK_F11);
+    RegisterHotKey(nullptr, 8, 0, VK_F12);
 
     MSG msg;
     while (running_) {
@@ -611,6 +623,27 @@ void Bot::hotkeyLoop() {
                     static_cast<BotSettings*>(settings_mm_.pView)->target_kph = settings_.target_kph;
                 printf("[Bot] Target: %.0f kph\n", settings_.target_kph);
                 break;
+            case 6: { // F10 — calibrate steer (Axle 1)
+                int next = (calib_axis_.load() == 1) ? 0 : 1;
+                calib_axis_.store(next);
+                printf("[Bot] Calib %s — STEER axis sweeping. Click 'Steering' in AC controls now.\n",
+                       next ? "ON" : "OFF");
+                break;
+            }
+            case 7: { // F11 — calibrate throttle (Axle 2)
+                int next = (calib_axis_.load() == 2) ? 0 : 2;
+                calib_axis_.store(next);
+                printf("[Bot] Calib %s — THROTTLE axis sweeping. Click 'Throttle' in AC controls now.\n",
+                       next ? "ON" : "OFF");
+                break;
+            }
+            case 8: { // F12 — calibrate brake (Axle 3)
+                int next = (calib_axis_.load() == 3) ? 0 : 3;
+                calib_axis_.store(next);
+                printf("[Bot] Calib %s — BRAKE axis sweeping. Click 'Brakes' in AC controls now.\n",
+                       next ? "ON" : "OFF");
+                break;
+            }
             }
         }
         Sleep(10);
@@ -621,6 +654,9 @@ void Bot::hotkeyLoop() {
     UnregisterHotKey(nullptr, 3);
     UnregisterHotKey(nullptr, 4);
     UnregisterHotKey(nullptr, 5);
+    UnregisterHotKey(nullptr, 6);
+    UnregisterHotKey(nullptr, 7);
+    UnregisterHotKey(nullptr, 8);
 }
 
 // ─── Own car read ──────────────────────────────────────────────────────────────
