@@ -7,31 +7,39 @@
 - Custom Shaders Patch (CSP) v0.2.x+
 - Visual Studio 2022 (Community is fine) with C++ workload
 - CMake 3.20+
+- **ViGEm Bus** (virtual gamepad driver — free, one-time install)
 
 ---
 
-## 1. Enable CSP Custom AI
+## 1. Install ViGEm Bus (virtual controller driver)
 
-**`assettocorsa/extension/config/new_behaviour.ini`** (create if missing):
-```ini
-[CUSTOM_AI]
-ENABLED=1
-```
+The bot controls your car via a virtual Xbox 360 controller.
+No CSP config needed — this works in online multiplayer.
 
-**Track surfaces.ini** — SRP is a multi-layout track, so there is no root `data/` folder.
-Open the track directory and find each layout subfolder that has a `data/` inside it:
-```
-assettocorsa/content/tracks/shuto_revival_project_beta/<layout>/data/surfaces.ini
-```
-Add to each layout you plan to run on:
-```ini
-[_EXTRA_PERMISSIONS]
-ALLOW_CUSTOM_AI_MANIPULATION=1
-```
+1. Download **ViGEmBus_Setup_x64.exe** from:
+   `https://github.com/nefarius/ViGEmBus/releases` (latest release)
+2. Run the installer, reboot if prompted.
 
 ---
 
-## 2. Get the track spline
+## 2. Configure AC to use the virtual controller
+
+> Do this ONCE after installing ViGEm and first running the bot.
+
+1. Start the bot (`run.bat`) — it will create the virtual gamepad
+2. Open AC → **Options → Controls**
+3. At the top, select **"Xbox 360 Controller (ViGEm)"** (or similar name) as your device
+4. Assign axes:
+   - **Steer**: Left Stick X (move stick right to confirm; if inverted, tick "Invert")
+   - **Gas**: Right Trigger
+   - **Brake**: Left Trigger
+5. Set **Steering lock** to match your car (360° is a good default)
+6. **Save** and exit Controls
+7. You only need to do this once — AC remembers the profile.
+
+---
+
+## 3. Get the track spline
 
 Copy fast_lane.ai from the SRP track folder:
 ```
@@ -43,7 +51,7 @@ Or download the optimised SRP AI splines from OverTake.gg (ID 61359).
 
 ---
 
-## 3. Build
+## 4. Build
 
 ```bat
 cmake -B build -G "Visual Studio 17 2022" -A x64
@@ -54,7 +62,7 @@ Binary at `build/Release/nohesi_bot.exe`.
 
 ---
 
-## 4. Install Lua overlay
+## 5. Install Lua overlay
 
 Copy `lua/nohesi_bot/` to:
 ```
@@ -65,7 +73,7 @@ Enable it in AC's app list (right side of screen in-game).
 
 ---
 
-## 5. Run
+## 6. Run
 
 Start AC, join a No Hesi server, wait until on track, then:
 
@@ -86,7 +94,7 @@ Options:
 
 ---
 
-## 6. In-game overlay
+## 7. In-game overlay
 
 The CSP Lua app shows:
 
@@ -119,7 +127,7 @@ The CSP Lua app shows:
 
 ---
 
-## 7. Architecture
+## 8. Architecture
 
 ```
 333 Hz — Control thread (main)
@@ -144,7 +152,7 @@ UDP — Lua overlay
 
 ---
 
-## 8. Tuning guide
+## 9. Tuning guide
 
 After each run, check `logs/session_*.jsonl`. Key fields:
 - `cte`: cross-track error — if consistently > 0.3m, increase `stanley_ke`

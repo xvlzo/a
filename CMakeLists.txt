@@ -22,6 +22,7 @@ add_executable(nohesi_bot
   src/planner.cpp
   src/controller.cpp
   src/wheel_model.cpp
+  src/virtual_controller.cpp
 )
 
 target_include_directories(nohesi_bot PRIVATE src)

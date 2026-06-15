@@ -17,6 +17,7 @@
 #include "planner.h"
 #include "controller.h"
 #include "wheel_model.h"
+#include "virtual_controller.h"
 
 // ── Mmap handle wrapper ───────────────────────────────────────────────────────
 struct MmapHandle {
@@ -105,6 +106,7 @@ private:
     std::unique_ptr<FrenetPlanner>    planner_;
     std::unique_ptr<StanleyController> controller_;
     std::unique_ptr<WheelModel>        wheel_;
+    VirtualController                  vctrl_;   // virtual Xbox gamepad for online multiplayer
 
     // Atomic plan handoff (planning → control)
     std::mutex         plan_mutex_;

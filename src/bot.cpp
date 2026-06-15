@@ -77,6 +77,7 @@ bool Bot::init() {
 
     if (!openMmaps()) return false;
     verifyMmaps();
+    vctrl_.init();  // virtual gamepad for online multiplayer; gracefully no-ops if ViGEm not installed
     openLogFile();
     initUDP();
 
@@ -309,7 +310,10 @@ void Bot::controlLoop() {
             is_active_ = false;
             wheel_->reset();
             controller_->reset();
-            if (!cfg_.dry_run) writeControls({0.f, 0.f, 0.f});
+            if (!cfg_.dry_run) {
+                writeControls({0.f, 0.f, 0.f});
+                if (vctrl_.available()) vctrl_.update(0.f, 0.f, 0.f);
+            }
             printf("[Bot] DISABLED\n");
         }
 
@@ -697,16 +701,25 @@ void Bot::triggerTeleportToPits() {
 
 // ─── Write controls ────────────────────────────────────────────────────────────
 void Bot::writeControls(const WheelOutput& out) {
-    if (!own_ctrl_mm_.valid) return;
-    auto* ctrl = static_cast<CarControls*>(own_ctrl_mm_.pView);
-    ctrl->gas          = std::clamp(out.throttle, 0.f, 1.f);
-    ctrl->brake        = std::clamp(out.brake,    0.f, 1.f);
-    ctrl->steer        = std::clamp(out.steer,   -1.f, 1.f);
-    ctrl->clutch       = 0.f;
-    ctrl->handbrake    = 0.f;
-    ctrl->autoshift_active = true;
-    ctrl->teleport_to  = teleport_pending_ ? static_cast<uint8_t>(1) : static_cast<uint8_t>(0);
-    teleport_pending_  = false;  // consumed — only active for the one frame we set it
+    // Virtual gamepad (online multiplayer — AC reads it as a real Xbox controller)
+    if (vctrl_.available()) {
+        vctrl_.update(out.steer, out.throttle, out.brake);
+    }
+
+    // CSP Custom AI mmap (offline / singleplayer AI car slots — fallback/legacy)
+    if (own_ctrl_mm_.valid) {
+        auto* ctrl = static_cast<CarControls*>(own_ctrl_mm_.pView);
+        ctrl->gas              = std::clamp(out.throttle, 0.f, 1.f);
+        ctrl->brake            = std::clamp(out.brake,    0.f, 1.f);
+        ctrl->steer            = std::clamp(out.steer,   -1.f, 1.f);
+        ctrl->clutch           = 0.f;
+        ctrl->handbrake        = 0.f;
+        ctrl->autoshift_active = true;
+        ctrl->teleport_to      = teleport_pending_ ? static_cast<uint8_t>(1) : static_cast<uint8_t>(0);
+        teleport_pending_      = false;
+    } else {
+        teleport_pending_ = false;
+    }
 }
 
 // ─── Settings / Status ────────────────────────────────────────────────────────
