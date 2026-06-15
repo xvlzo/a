@@ -49,6 +49,41 @@ ControlDemand StanleyController::update(float wx, float wz,
     // Heading error relative to road
     float herr = wrapAngle(heading - fs.road_heading);
 
+    // ── Seek/merge mode ───────────────────────────────────────────────────────
+    // Stanley saturates to full lock (→ donuts) when the car is far off the line,
+    // e.g. spawned in a pit/staging area. When the offset is large, switch to a
+    // pure-pursuit controller that aims at a lookahead point ON the racing line
+    // and drives toward it, merging smoothly. Hysteresis: enter at 8 m, exit at 4 m.
+    if (!seeking_ && std::abs(cte) > 8.f)  seeking_ = true;
+    if ( seeking_ && std::abs(cte) < 4.f)  seeking_ = false;
+
+    if (seeking_) {
+        // Lookahead grows with speed and with how far off we are → shallow merge
+        float L = std::clamp(speed_ms * 1.5f + 0.3f * std::abs(cte), 15.f, 50.f);
+        float s_target = fs.s + L;
+        if (spline_.total_length > 1.f)
+            s_target = std::fmod(s_target, spline_.total_length);
+
+        float tx, tz;
+        spline_.frenetToWorld(s_target, target_d, tx, tz);
+
+        // Steer toward the target point. Same convention as Stanley's herr:
+        // reference heading = direction car→target; error = heading - reference.
+        float ang        = std::atan2(tx - wx, tz - wz);
+        float seek_err   = wrapAngle(heading - ang);
+        float raw        = std::clamp(seek_err, -max_steer_rad_, max_steer_rad_);
+        float steer_raw  = raw / max_steer_rad_;
+        float steer      = 0.25f * steer_raw + 0.75f * prev_steer_;
+        prev_steer_      = steer;
+
+        // Gentle, capped throttle while merging (don't rocket off the line)
+        float merge_v    = std::min(target_v_ms, 22.f); // ~80 kph cap
+        float accel      = speed_pid_.update(merge_v - speed_ms, dt);
+        float throttle   = std::clamp(accel, 0.f, 0.5f);
+        float brake      = std::clamp(-accel / 3.f, 0.f, 1.f);
+        return { steer, throttle, brake, cte, herr };
+    }
+
     // Stanley: δ = heading_err - arctan(ke * cte / (v + ks))
     // Negative sign: in AC steer<0=right, d>0=left, so CTE correction must be negated
     float stanley = -std::atan2(ke_ * cte, speed_ms + ks_);
@@ -73,4 +108,5 @@ ControlDemand StanleyController::update(float wx, float wz,
 void StanleyController::reset() {
     speed_pid_.reset();
     prev_steer_ = 0.f;
+    seeking_    = false;
 }

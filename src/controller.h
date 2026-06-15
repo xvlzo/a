@@ -59,4 +59,5 @@ private:
     PID   speed_pid_;
     int   last_hint_ = 0;
     float prev_steer_ = 0.f;
+    bool  seeking_    = false; // true while merging onto the line from a large offset
 };
