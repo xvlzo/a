@@ -25,7 +25,7 @@ StanleyController::StanleyController(const Spline& spline,
                                      float max_steer_deg)
     : spline_(spline), ke_(ke), ks_(ks),
       max_steer_rad_(max_steer_deg * 3.14159f / 180.f),
-      speed_pid_(0.06f, 0.003f, 0.008f, 20.f)
+      speed_pid_(0.08f, 0.012f, 0.008f, 50.f)
 {}
 
 static float wrapAngle(float a) {
