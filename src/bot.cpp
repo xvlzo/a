@@ -106,8 +106,13 @@ bool Bot::openMmaps() {
     }
     if (own_car_mm_.valid)
         printf("[Bot] Car%d.v0 opened\n", cfg_.own_car_index);
-    else
-        printf("[Bot] Car%d.v0 not found, using acpmf_physics fallback\n", cfg_.own_car_index);
+    else {
+        printf("[Bot] Car%d.v0 not found — CONTROLS WILL NOT WORK.\n", cfg_.own_car_index);
+        printf("[Bot]   Fix: ensure new_behaviour.ini has [CUSTOM_AI] ENABLED=1\n");
+        printf("[Bot]   AND surfaces.ini for your layout has [_EXTRA_PERMISSIONS] ALLOW_CUSTOM_AI_MANIPULATION=1\n");
+        printf("[Bot]   AND start this bot BEFORE clicking Drive in AC.\n");
+        printf("[Bot]   Falling back to acpmf_physics for read-only telemetry.\n");
+    }
 
     // AC shared memory fallback
     physics_mm_.openRead("Local\\acpmf_physics", sizeof(SPageFilePhysics));
@@ -152,8 +157,27 @@ bool Bot::openTrafficMmaps() {
             ++opened;
         }
     }
-    printf("[Bot] Traffic slots: %d opened\n", opened);
+    if (opened == 0)
+        printf("[Bot] Traffic slots: 0 opened — CSP Custom AI not active yet (will retry every 5s)\n");
+    else
+        printf("[Bot] Traffic slots: %d opened\n", opened);
     return opened > 0;
+}
+
+void Bot::retryTrafficSlots() {
+    int newly_opened = 0;
+    char name[256];
+    for (auto& slot : traffic_slots_) {
+        if (slot.mmap.valid) continue;
+        snprintf(name, sizeof(name),
+                 "AcTools.CSP.NewBehaviour.CustomAI.CarPublic%d.v0", slot.idx);
+        if (slot.mmap.openRead(name, sizeof(CarPublicData))) {
+            slot.active = true;
+            ++newly_opened;
+        }
+    }
+    if (newly_opened > 0)
+        printf("[Bot] Retry: %d new traffic slot(s) opened\n", newly_opened);
 }
 
 // ─── Mmap verification ───────────────────────────────────────────────────────
@@ -421,9 +445,17 @@ void Bot::planningLoop() {
 
     float px = 0, pz = 0, heading = 0, speed_ms = 0, spline_pos = 0;
     bool spline_dir_checked = false;
+    int retry_ticks = 0;
+    const int retry_interval = static_cast<int>(cfg_.planning_hz * 5.f); // every 5 s
 
     while (running_) {
         timer.beginFrame();
+
+        // Periodically retry any traffic mmaps that failed at init (cars that spawned late)
+        if (++retry_ticks >= retry_interval) {
+            retry_ticks = 0;
+            retryTrafficSlots();
+        }
 
         // Only run full planning when on-track and ACTIVE
         // (avoids garbage Frenet projections while car is in pit lane)

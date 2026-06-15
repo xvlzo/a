@@ -144,6 +144,7 @@ private:
     // ── Helpers ──────────────────────────────────────────────────────────────
     bool openMmaps();
     bool openTrafficMmaps();
+    void retryTrafficSlots();   // re-scan for any mmaps that weren't ready at init
     void verifyMmaps(); // polls packet_id to confirm CSP is writing, sanity-checks fields
     void readSettings();
     void writeStatus();

@@ -41,7 +41,7 @@ local settings = {
     pass_dist    = 3.0,
 }
 
-local dirty = false          -- settings changed, need to send
+local dirty = true           -- send initial settings on first update to establish connection
 local last_recv = 0          -- last status receive time
 local connected = false
 
