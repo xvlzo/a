@@ -29,8 +29,8 @@ bool VirtualController::init() {
 
     // Check device status
     int st = fn_status_(kDeviceId);
-    // VJD_STAT_FREE=3, VJD_STAT_OWN=2
-    if (st != 3 && st != 2) {
+    // VJD_STAT_OWN=0, VJD_STAT_FREE=1 — both mean we can acquire
+    if (st != 0 && st != 1) {
         printf("[VCtrl] vJoy Device %d not available (status=%d).\n", kDeviceId, st);
         printf("[VCtrl]   Open vJoyConf and enable Device 1 with axes X, Y, Z\n");
         FreeLibrary(hLib_); hLib_ = nullptr;
