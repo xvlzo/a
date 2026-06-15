@@ -32,13 +32,6 @@ struct MmapHandle {
     ~MmapHandle() { close(); }
 };
 
-// ── Per-traffic-car runtime state ─────────────────────────────────────────────
-struct TrafficSlot {
-    MmapHandle mmap;
-    bool       active = false;
-    int        idx    = 0;
-};
-
 // ── Planner output (atomic handoff between planning and control threads) ─────
 struct PlanOutput {
     float target_d   = 0.f;
@@ -96,8 +89,6 @@ private:
     MmapHandle graphics_mm_;    // acpmf_graphics (traffic fallback)
     MmapHandle settings_mm_;    // BotSettings.v0 (from Lua overlay)
     MmapHandle status_mm_;      // BotStatus.v0   (to Lua overlay)
-
-    std::vector<TrafficSlot> traffic_slots_;
 
     // Settings (live, updated from mmap)
     BotSettings settings_{};
@@ -167,9 +158,6 @@ private:
 
     // ── Helpers ──────────────────────────────────────────────────────────────
     bool openMmaps();
-    bool openTrafficMmaps();
-    void retryTrafficSlots();   // re-scan for any mmaps that weren't ready at init
-    void verifyMmaps(); // polls packet_id to confirm CSP is writing, sanity-checks fields
     void readSettings();
     void writeStatus();
     void logFrame(const WheelOutput& out, const ControlDemand& raw, float dt_ms);

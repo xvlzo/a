@@ -81,7 +81,6 @@ bool Bot::init() {
     live_safety_margin_.store(cfg_.safety_margin);
 
     if (!openMmaps()) return false;
-    verifyMmaps();
     vctrl_.init();  // virtual gamepad for online multiplayer; gracefully no-ops if ViGEm not installed
     openLogFile();
     initUDP();
@@ -93,42 +92,26 @@ bool Bot::init() {
 bool Bot::openMmaps() {
     char name[256];
 
-    // Own car controls (CSP) — we create this first so CSP can detect us
+    // CSP Custom AI mmaps — only valid offline/singleplayer AI slots.
+    // In online multiplayer these never open; vJoy + Lua telemetry handle it.
     snprintf(name, sizeof(name),
              "AcTools.CSP.NewBehaviour.CustomAI.CarControls%d.v0", cfg_.own_car_index);
-    if (own_ctrl_mm_.openReadWrite(name, sizeof(CarControls)))
-        printf("[Bot] CarControls%d.v0 created\n", cfg_.own_car_index);
-    else
-        printf("[Bot] WARNING: CarControls%d.v0 open failed — CSP Custom AI not enabled?\n",
-               cfg_.own_car_index);
+    own_ctrl_mm_.openReadWrite(name, sizeof(CarControls));
 
-    // Own car state (CSP) — poll for up to 3 s; CSP may create it after seeing CarControls
     snprintf(name, sizeof(name),
              "AcTools.CSP.NewBehaviour.CustomAI.Car%d.v0", cfg_.own_car_index);
     for (int i = 0; i < 30; ++i) {
         if (own_car_mm_.openRead(name, sizeof(CarData))) break;
-        if (i == 0) printf("[Bot] Waiting for Car%d.v0...\n", cfg_.own_car_index);
         Sleep(100);
     }
-    if (own_car_mm_.valid)
-        printf("[Bot] Car%d.v0 opened\n", cfg_.own_car_index);
-    else {
-        printf("[Bot] Car%d.v0 not found — CONTROLS WILL NOT WORK.\n", cfg_.own_car_index);
-        printf("[Bot]   Fix: ensure new_behaviour.ini has [CUSTOM_AI] ENABLED=1\n");
-        printf("[Bot]   AND surfaces.ini for your layout has [_EXTRA_PERMISSIONS] ALLOW_CUSTOM_AI_MANIPULATION=1\n");
-        printf("[Bot]   AND start this bot BEFORE clicking Drive in AC.\n");
-        printf("[Bot]   Falling back to acpmf_physics for read-only telemetry.\n");
-    }
 
-    // AC shared memory fallback
+    // AC shared memory (physics: speed/heading fallback; graphics: pit lane status)
     physics_mm_.openRead("Local\\acpmf_physics", sizeof(SPageFilePhysics));
     graphics_mm_.openRead("Local\\acpmf_graphics", sizeof(SPageFileGraphic));
 
-    // Settings mmap (Lua writes, we read)
+    // Settings/status mmaps for optional offline Lua overlay
     settings_mm_.openReadWrite("NohesiBot.Settings.v0", sizeof(BotSettings));
     if (settings_mm_.valid) {
-        // Pre-fill with cmd-line defaults so readSettings() is a no-op before Lua connects.
-        // Zeroed memory would incorrectly override humanization/smoothness (0.0 passes range checks).
         auto* s = static_cast<BotSettings*>(settings_mm_.pView);
         s->humanization       = cfg_.humanization;
         s->smoothness         = cfg_.smoothness;
@@ -139,107 +122,12 @@ bool Bot::openMmaps() {
         s->close_1x_m         = pc.close_1x_m;
         s->target_pass_dist_m = pc.target_pass_dist;
     }
-
-    // Status mmap (we write, Lua reads)
     status_mm_.openReadWrite("NohesiBot.Status.v0", sizeof(BotStatus));
-
-    // Open as many traffic slots as possible
-    openTrafficMmaps();
 
     return true;
 }
 
-bool Bot::openTrafficMmaps() {
-    int opened = 0;
-    char name[256];
-    for (int i = 0; i < cfg_.max_traffic; ++i) {
-        if (i == cfg_.own_car_index) continue;
-        snprintf(name, sizeof(name),
-                 "AcTools.CSP.NewBehaviour.CustomAI.CarPublic%d.v0", i);
-        auto& slot = traffic_slots_.emplace_back();
-        slot.idx = i;
-        if (slot.mmap.openRead(name, sizeof(CarPublicData))) {
-            slot.active = true;
-            ++opened;
-        }
-    }
-    if (opened == 0)
-        printf("[Bot] Traffic slots: 0 opened — CSP Custom AI not active yet (will retry every 5s)\n");
-    else
-        printf("[Bot] Traffic slots: %d opened\n", opened);
-    return opened > 0;
-}
 
-void Bot::retryTrafficSlots() {
-    int newly_opened = 0;
-    char name[256];
-    for (auto& slot : traffic_slots_) {
-        if (slot.mmap.valid) continue;
-        snprintf(name, sizeof(name),
-                 "AcTools.CSP.NewBehaviour.CustomAI.CarPublic%d.v0", slot.idx);
-        if (slot.mmap.openRead(name, sizeof(CarPublicData))) {
-            slot.active = true;
-            ++newly_opened;
-        }
-    }
-    if (newly_opened > 0)
-        printf("[Bot] Retry: %d new traffic slot(s) opened\n", newly_opened);
-}
-
-// ─── Mmap verification ───────────────────────────────────────────────────────
-void Bot::verifyMmaps() {
-    if (!own_car_mm_.valid) {
-        // Running in fallback mode — nothing CSP-specific to verify
-        printf("[Bot] Skipping CSP mmap verification (Car.v0 not open)\n");
-        return;
-    }
-
-    const auto* d = static_cast<const CarData*>(own_car_mm_.pView);
-
-    // Poll packet_id for up to 2 s — it increments every physics tick (~333 Hz)
-    printf("[Bot] Waiting for CSP to start writing Car%d.v0...\n", cfg_.own_car_index);
-    int32_t id0 = d->packet_id;
-    bool advancing = false;
-    for (int i = 0; i < 200; ++i) {   // 200 × 10 ms = 2 s
-        Sleep(10);
-        if (d->packet_id != id0) { advancing = true; break; }
-    }
-
-    if (!advancing) {
-        printf("[Bot] WARNING: CarData.packet_id never advanced after 2 s.\n"
-               "              Is CSP Custom AI enabled? Is AC running and loaded?\n");
-        // Don't abort — user can see the warning and decide
-        return;
-    }
-
-    // packet_id is moving; now sanity-check the data fields
-    bool ok = true;
-
-    if (d->speed_kmh < 0.f || d->speed_kmh > 400.f) {
-        printf("[Bot] WARNING: speed_kmh = %.1f — out of range [0, 400]."
-               " Struct layout mismatch?\n", d->speed_kmh);
-        ok = false;
-    }
-
-    float lx = d->look.x, ly = d->look.y, lz = d->look.z;
-    float look_mag = std::sqrt(lx*lx + ly*ly + lz*lz);
-    if (look_mag < 0.9f || look_mag > 1.1f) {
-        printf("[Bot] WARNING: look vector magnitude = %.3f — expected ~1.0."
-               " Struct layout mismatch?\n", look_mag);
-        ok = false;
-    }
-
-    if (d->spline_position < 0.f || d->spline_position > 1.f) {
-        printf("[Bot] WARNING: spline_position = %.4f — out of range [0, 1]."
-               " Struct layout mismatch?\n", d->spline_position);
-        ok = false;
-    }
-
-    if (ok)
-        printf("[Bot] CSP mmap sanity OK (packet_id advancing, fields plausible)\n");
-    else
-        printf("[Bot] One or more CSP mmap fields look wrong — proceed with caution.\n");
-}
 
 // ─── Run ──────────────────────────────────────────────────────────────────────
 void Bot::run() {
@@ -463,17 +351,9 @@ void Bot::planningLoop() {
 
     float px = 0, pz = 0, heading = 0, speed_ms = 0, spline_pos = 0;
     bool spline_dir_checked = false;
-    int retry_ticks = 0;
-    const int retry_interval = static_cast<int>(cfg_.planning_hz * 5.f); // every 5 s
 
     while (running_) {
         timer.beginFrame();
-
-        // Periodically retry any traffic mmaps that failed at init (cars that spawned late)
-        if (++retry_ticks >= retry_interval) {
-            retry_ticks = 0;
-            retryTrafficSlots();
-        }
 
         // Only run full planning when on-track and ACTIVE
         // (avoids garbage Frenet projections while car is in pit lane)
@@ -851,42 +731,8 @@ std::vector<TrafficCar> Bot::readTraffic() {
     if (lua_fresh)
         return readTrafficFromLua();
 
-    // Prefer CSP CarPublic mmaps (have speed + heading directly)
-    bool any_csp = false;
-    for (auto& slot : traffic_slots_)
-        if (slot.mmap.valid) { any_csp = true; break; }
-
-    if (!any_csp)
-        return readTrafficFromGraphics();
-
-    std::vector<TrafficCar> result;
-    result.reserve(traffic_slots_.size());
-
-    for (auto& slot : traffic_slots_) {
-        if (!slot.mmap.valid) continue;
-        auto* pd = static_cast<const CarPublicData*>(slot.mmap.pView);
-        if (pd->speed_kmh < 1.f) continue;
-
-        float tx = pd->position.x, tz = pd->position.z;
-        FrenetState fs = spline_.project(tx, tz, planner_->hintIdx(), 100);
-
-        float heading  = std::atan2(pd->look.x, pd->look.z);
-        float herr     = heading - fs.road_heading;
-        while (herr >  3.14159f) herr -= 6.28318f;
-        while (herr < -3.14159f) herr += 6.28318f;
-
-        float speed_ms = pd->speed_kmh / 3.6f;
-        TrafficCar tc;
-        tc.s0      = fs.s;
-        tc.d0      = fs.d;
-        tc.v_s     = speed_ms * std::cos(herr);
-        tc.v_d     = speed_ms * std::sin(herr);
-        tc.half_w  = planner_->config().traffic_half_w;
-        tc.half_l  = planner_->config().traffic_half_l;
-        tc.car_idx = slot.idx;
-        result.push_back(tc);
-    }
-    return result;
+    // Fallback: acpmf_graphics (when Lua overlay isn't connected)
+    return readTrafficFromGraphics();
 }
 
 // ─── Pit helpers ──────────────────────────────────────────────────────────────
