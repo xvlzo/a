@@ -5,6 +5,7 @@
 #include <cstring>
 #include <ctime>
 #include <algorithm>
+#include <utility>
 #include <ws2tcpip.h>
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "winmm.lib")
@@ -676,6 +677,22 @@ void Bot::hotkeyLoop() {
 // ─── Own car read ──────────────────────────────────────────────────────────────
 bool Bot::readOwnCar(float& px, float& pz, float& heading,
                       float& speed_ms, float& spline_pos) {
+    // Preferred: live telemetry streamed from CSP Lua (works online).
+    {
+        std::lock_guard<std::mutex> lk(telem_mutex_);
+        if (lua_ego_valid_) {
+            float age = std::chrono::duration<float>(
+                std::chrono::steady_clock::now() - lua_ego_time_).count();
+            if (age < 0.5f) {
+                px         = lua_ego_.x;
+                pz         = lua_ego_.z;
+                heading    = lua_ego_.heading;
+                speed_ms   = lua_ego_.speed_kmh / 3.6f;
+                spline_pos = 0.f;  // not provided by Lua feed; not required
+                return true;
+            }
+        }
+    }
     if (own_car_mm_.valid) {
         auto* d = static_cast<const CarData*>(own_car_mm_.pView);
         px = d->position.x; pz = d->position.z;
@@ -758,8 +775,82 @@ std::vector<TrafficCar> Bot::readTrafficFromGraphics() {
     return result;
 }
 
+// ─── Telemetry from CSP Lua ────────────────────────────────────────────────────
+// Packet: "t|ex,ez,eheading,espeed|idx,x,z,heading,speed;idx,...;"
+void Bot::parseTelemetry(const char* buf) {
+    // buf points just past the leading "t|"
+    LuaCar ego{};
+    if (std::sscanf(buf, "%f,%f,%f,%f",
+                    &ego.x, &ego.z, &ego.heading, &ego.speed_kmh) != 4)
+        return;
+
+    std::vector<LuaCar> traffic;
+    const char* p = std::strchr(buf, '|');   // end of ego segment
+    if (p) {
+        ++p;  // first traffic record
+        while (*p) {
+            LuaCar c{};
+            if (std::sscanf(p, "%d,%f,%f,%f,%f",
+                            &c.idx, &c.x, &c.z, &c.heading, &c.speed_kmh) == 5)
+                traffic.push_back(c);
+            const char* semi = std::strchr(p, ';');
+            if (!semi) break;
+            p = semi + 1;
+        }
+    }
+
+    std::lock_guard<std::mutex> lk(telem_mutex_);
+    lua_ego_       = ego;
+    lua_ego_valid_ = true;
+    lua_ego_time_  = std::chrono::steady_clock::now();
+    lua_traffic_   = std::move(traffic);
+}
+
+std::vector<TrafficCar> Bot::readTrafficFromLua() {
+    std::vector<LuaCar> cars;
+    {
+        std::lock_guard<std::mutex> lk(telem_mutex_);
+        cars = lua_traffic_;
+    }
+
+    std::vector<TrafficCar> result;
+    result.reserve(cars.size());
+    for (const auto& c : cars) {
+        if (c.speed_kmh < 1.f) continue;
+        FrenetState fs = spline_.project(c.x, c.z, planner_->hintIdx(), 100);
+        float herr = c.heading - fs.road_heading;
+        while (herr >  3.14159f) herr -= 6.28318f;
+        while (herr < -3.14159f) herr += 6.28318f;
+
+        float speed_ms = c.speed_kmh / 3.6f;
+        TrafficCar tc;
+        tc.s0      = fs.s;
+        tc.d0      = fs.d;
+        tc.v_s     = speed_ms * std::cos(herr);
+        tc.v_d     = speed_ms * std::sin(herr);
+        tc.half_w  = planner_->config().traffic_half_w;
+        tc.half_l  = planner_->config().traffic_half_l;
+        tc.car_idx = c.idx % 64;  // car_was_behind_ array is 64 wide
+        result.push_back(tc);
+    }
+    return result;
+}
+
 // ─── Traffic read ──────────────────────────────────────────────────────────────
 std::vector<TrafficCar> Bot::readTraffic() {
+    // Preferred: live telemetry from CSP Lua (online-capable, exact positions)
+    bool lua_fresh = false;
+    {
+        std::lock_guard<std::mutex> lk(telem_mutex_);
+        if (lua_ego_valid_) {
+            float age = std::chrono::duration<float>(
+                std::chrono::steady_clock::now() - lua_ego_time_).count();
+            lua_fresh = (age < 0.5f);
+        }
+    }
+    if (lua_fresh)
+        return readTrafficFromLua();
+
     // Prefer CSP CarPublic mmaps (have speed + heading directly)
     bool any_csp = false;
     for (auto& slot : traffic_slots_)
@@ -921,16 +1012,24 @@ void Bot::tickUDP() {
     static bool lua_connected = false;
     static int  lua_from_len  = sizeof(lua_from);
 
-    char buf[256];
+    // Drain all pending datagrams each tick (telemetry arrives every frame)
+    char buf[8192];
     sockaddr_in recv_from{};
     int rflen = sizeof(recv_from);
-    int n = recvfrom(udp_sock_, buf, sizeof(buf)-1, 0,
-                     reinterpret_cast<sockaddr*>(&recv_from), &rflen);
-    if (n > 0) {
+    int n;
+    while ((n = recvfrom(udp_sock_, buf, sizeof(buf)-1, 0,
+                         reinterpret_cast<sockaddr*>(&recv_from), &rflen)) > 0) {
         lua_from      = recv_from;
         lua_from_len  = std::min(rflen, (int)sizeof(lua_from));
         lua_connected = true;
         buf[n] = '\0';
+
+        // Telemetry feed: "t|ego|traffic..." — authoritative position source
+        if (buf[0] == 't' && buf[1] == '|') {
+            parseTelemetry(buf + 2);
+            continue;
+        }
+
         // Simple key=value protocol: "enabled=1", "hum=0.8", "speed=170"
         if (strncmp(buf, "enabled=", 8) == 0) {
             enabled_ = (buf[8] == '1');

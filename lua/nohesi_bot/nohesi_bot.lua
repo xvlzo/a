@@ -72,6 +72,45 @@ local function parseStatus(line)
     end
 end
 
+-- ── Stream live telemetry to the bot ─────────────────────────────────────────
+-- The C++ bot CANNOT read the player's world position from shared memory in
+-- online multiplayer (CSP Custom AI mmap only exists for AI slots, and
+-- acpmf_graphics.carCoordinates is garbage online). CSP Lua, however, has
+-- exact position/heading/speed for every car via ac.getCar(). So we are the
+-- authoritative position source. Packet (sent every frame):
+--   t|ex,ez,eheading,espeed|idx,x,z,heading,speed;idx,...;
+-- Coordinates are AC world X/Z; heading = atan2(look.x, look.z) to match the
+-- bot's convention. Traffic is filtered to within 250 m of the player.
+local TRAFFIC_RADIUS2 = 250 * 250
+local function sendTelemetry()
+    local sim = ac.getSim()
+    if not sim then return end
+    local egoIdx = sim.focusedCar or 0
+    local ego = ac.getCar(egoIdx)
+    if not ego then return end
+
+    local eh = math.atan(ego.look.x, ego.look.z)
+    local parts = { string.format('t|%.2f,%.2f,%.4f,%.2f|',
+        ego.position.x, ego.position.z, eh, ego.speedKmh) }
+
+    local n = sim.carsCount
+    for i = 0, n - 1 do
+        if i ~= egoIdx then
+            local c = ac.getCar(i)
+            if c and c.isConnected then
+                local dx = c.position.x - ego.position.x
+                local dz = c.position.z - ego.position.z
+                if dx*dx + dz*dz < TRAFFIC_RADIUS2 then
+                    local h = math.atan(c.look.x, c.look.z)
+                    parts[#parts+1] = string.format('%d,%.2f,%.2f,%.4f,%.2f;',
+                        i, c.position.x, c.position.z, h, c.speedKmh)
+                end
+            end
+        end
+    end
+    udp:send(table.concat(parts))
+end
+
 -- ── Update (called every frame by CSP) ───────────────────────────────────────
 function script.update(dt)
     -- Receive status from bot
@@ -86,6 +125,9 @@ function script.update(dt)
     if os.clock() - last_recv > 2 then
         connected = false
     end
+
+    -- Stream player + traffic positions to the bot (authoritative position feed)
+    sendTelemetry()
 
     -- Send dirty settings
     if dirty then

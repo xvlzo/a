@@ -145,6 +145,18 @@ private:
     };
     std::unordered_map<int, TrafficTrackEntry> traffic_tracker_;
 
+    // ── Live telemetry from CSP Lua (authoritative position feed, online-capable) ─
+    // CSP Lua streams the player + traffic world positions over UDP because the
+    // C++ side cannot read them from shared memory in online multiplayer.
+    struct LuaCar { int idx = 0; float x = 0, z = 0, heading = 0, speed_kmh = 0; };
+    std::mutex                          telem_mutex_;
+    LuaCar                              lua_ego_{};
+    bool                               lua_ego_valid_ = false;
+    std::chrono::steady_clock::time_point lua_ego_time_;
+    std::vector<LuaCar>                 lua_traffic_;
+    void parseTelemetry(const char* buf);
+    std::vector<TrafficCar> readTrafficFromLua();
+
     // UDP socket for Lua overlay
     SOCKET udp_sock_ = INVALID_SOCKET;
 
