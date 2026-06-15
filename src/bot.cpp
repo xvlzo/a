@@ -258,6 +258,22 @@ void Bot::controlLoop() {
 
             wheel_out = wheel_->process(raw.steer, raw.throttle, raw.brake, dt);
 
+            // Diagnostic (~1 Hz): where the bot thinks the line is vs where we are.
+            // Lets us tell a bad/offset spline (line off-road) from a control bias.
+            {
+                static int diag = 0;
+                if (++diag % 333 == 0) {
+                    FrenetState fs = spline_.project(px, pz, controller_->lastHintIdx(), 80);
+                    float lx, lz;
+                    spline_.frenetToWorld(fs.s, 0.f, lx, lz);
+                    float herr_deg = raw.heading_err * 57.2958f;
+                    printf("[Diag] car=(%.1f,%.1f) line=(%.1f,%.1f) cte=%.1fm herr=%.0fdeg "
+                           "steer=%.2f tgt_d=%.1f spd=%.0f\n",
+                           px, pz, lx, lz, raw.cte, herr_deg,
+                           wheel_out.steer, plan.target_d, speed_ms * 3.6f);
+                }
+            }
+
             float frame_ms = static_cast<float>(timer.frameElapsed() * 1000.0);
             logFrame(wheel_out, raw, frame_ms);
 
