@@ -639,46 +639,107 @@ bool Bot::readOwnCar(float& px, float& pz, float& heading,
         auto* g = static_cast<const SPageFileGraphic*>(graphics_mm_.pView);
         heading  = p->heading;
         speed_ms = p->speedKmh / 3.6f;
-        float norm = g->normalizedCarPosition;
-        float est_s = norm * spline_.total_length;
-        spline_.frenetToWorld(est_s, 0.f, px, pz);
-        spline_pos = norm;
+        spline_pos = g->normalizedCarPosition;
+        // Use actual world position from graphics mmap (playerCarID indexes carCoordinates)
+        int pid = g->playerCarID;
+        if (pid >= 0 && pid < 60) {
+            px = g->carCoordinates[pid * 3 + 0];
+            pz = g->carCoordinates[pid * 3 + 2];
+        } else {
+            float est_s = spline_pos * spline_.total_length;
+            spline_.frenetToWorld(est_s, 0.f, px, pz);
+        }
         return true;
     }
     return false;
 }
 
+// ─── Traffic read (acpmf_graphics fallback) ────────────────────────────────────
+std::vector<TrafficCar> Bot::readTrafficFromGraphics() {
+    std::vector<TrafficCar> result;
+    if (!graphics_mm_.valid) return result;
+    auto* g = static_cast<const SPageFileGraphic*>(graphics_mm_.pView);
+    int active = std::min(g->activeCars, 60);
+    auto now = std::chrono::steady_clock::now();
+    result.reserve(active);
+
+    for (int i = 0; i < active; ++i) {
+        int cid = g->carID[i];
+        if (cid == g->playerCarID) continue;
+
+        float tx = g->carCoordinates[i * 3 + 0];
+        float tz = g->carCoordinates[i * 3 + 2];
+
+        // Estimate velocity from previous frame position
+        auto& trk = traffic_tracker_[cid];
+        float vx = 0.f, vz = 0.f;
+        if (trk.valid) {
+            float dt = std::chrono::duration<float>(now - trk.last_t).count();
+            if (dt > 0.001f && dt < 0.5f) {
+                vx = (tx - trk.x) / dt;
+                vz = (tz - trk.z) / dt;
+            }
+        }
+        trk.x = tx; trk.z = tz;
+        trk.vx = vx; trk.vz = vz;
+        trk.valid = true;
+        trk.last_t = now;
+
+        FrenetState fs = spline_.project(tx, tz, planner_->hintIdx(), 100);
+        float speed = std::sqrt(vx*vx + vz*vz);
+        float car_h = (speed > 0.5f) ? std::atan2(vx, vz) : fs.road_heading;
+        float herr  = car_h - fs.road_heading;
+        while (herr >  3.14159f) herr -= 6.28318f;
+        while (herr < -3.14159f) herr += 6.28318f;
+
+        TrafficCar tc;
+        tc.s0     = fs.s;
+        tc.d0     = fs.d;
+        tc.v_s    = speed * std::cos(herr);
+        tc.v_d    = speed * std::sin(herr);
+        tc.half_w = planner_->config().traffic_half_w;
+        tc.half_l = planner_->config().traffic_half_l;
+        tc.car_idx = cid % 64; // car_was_behind_ array is 64 wide
+        result.push_back(tc);
+    }
+    return result;
+}
+
 // ─── Traffic read ──────────────────────────────────────────────────────────────
 std::vector<TrafficCar> Bot::readTraffic() {
+    // Prefer CSP CarPublic mmaps (have speed + heading directly)
+    bool any_csp = false;
+    for (auto& slot : traffic_slots_)
+        if (slot.mmap.valid) { any_csp = true; break; }
+
+    if (!any_csp)
+        return readTrafficFromGraphics();
+
     std::vector<TrafficCar> result;
     result.reserve(traffic_slots_.size());
-
-    float ego_s = planner_->egoS();
 
     for (auto& slot : traffic_slots_) {
         if (!slot.mmap.valid) continue;
         auto* pd = static_cast<const CarPublicData*>(slot.mmap.pView);
-        if (pd->speed_kmh < 1.f) continue; // inactive / parked
+        if (pd->speed_kmh < 1.f) continue;
 
         float tx = pd->position.x, tz = pd->position.z;
         FrenetState fs = spline_.project(tx, tz, planner_->hintIdx(), 100);
 
-        float heading = std::atan2(pd->look.x, pd->look.z);
-        float road_h  = fs.road_heading;
-        float herr    = heading - road_h;
+        float heading  = std::atan2(pd->look.x, pd->look.z);
+        float herr     = heading - fs.road_heading;
         while (herr >  3.14159f) herr -= 6.28318f;
         while (herr < -3.14159f) herr += 6.28318f;
 
         float speed_ms = pd->speed_kmh / 3.6f;
         TrafficCar tc;
-        tc.s0 = fs.s;
-        tc.d0 = fs.d;
-        tc.v_s = speed_ms * std::cos(herr);
-        tc.v_d = speed_ms * std::sin(herr);
+        tc.s0      = fs.s;
+        tc.d0      = fs.d;
+        tc.v_s     = speed_ms * std::cos(herr);
+        tc.v_d     = speed_ms * std::sin(herr);
         tc.half_w  = planner_->config().traffic_half_w;
         tc.half_l  = planner_->config().traffic_half_l;
         tc.car_idx = slot.idx;
-
         result.push_back(tc);
     }
     return result;

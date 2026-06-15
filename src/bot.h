@@ -10,6 +10,7 @@
 #include <string>
 #include <fstream>
 #include <chrono>
+#include <unordered_map>
 
 #include "csp_structs.h"
 #include "ac_structs.h"
@@ -135,6 +136,14 @@ private:
     std::atomic<int>   passes_1x_total_{ 0 };
     bool car_was_behind_[64]{};  // per-car_idx: true = ego hasn't yet passed this car
 
+    // Velocity tracker for acpmf_graphics traffic fallback
+    struct TrafficTrackEntry {
+        float x = 0, z = 0, vx = 0, vz = 0;
+        bool  valid = false;
+        std::chrono::steady_clock::time_point last_t;
+    };
+    std::unordered_map<int, TrafficTrackEntry> traffic_tracker_;
+
     // UDP socket for Lua overlay
     SOCKET udp_sock_ = INVALID_SOCKET;
 
@@ -161,6 +170,7 @@ private:
 
     // Read + project traffic into Frenet
     std::vector<TrafficCar> readTraffic();
+    std::vector<TrafficCar> readTrafficFromGraphics(); // fallback when CSP mmaps unavailable
 
     // Write control output (CarControls mmap); clears teleport_pending_ after one frame
     void writeControls(const WheelOutput& out);
