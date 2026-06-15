@@ -640,11 +640,14 @@ bool Bot::readOwnCar(float& px, float& pz, float& heading,
         heading  = p->heading;
         speed_ms = p->speedKmh / 3.6f;
         spline_pos = g->normalizedCarPosition;
-        // Use actual world position from graphics mmap (playerCarID indexes carCoordinates)
-        int pid = g->playerCarID;
-        if (pid >= 0 && pid < 60) {
-            px = g->carCoordinates[pid * 3 + 0];
-            pz = g->carCoordinates[pid * 3 + 2];
+        // Find player's slot in carCoordinates by matching playerCarID
+        int player_slot = -1;
+        for (int i = 0; i < 60; ++i) {
+            if (g->carID[i] == g->playerCarID) { player_slot = i; break; }
+        }
+        if (player_slot >= 0) {
+            px = g->carCoordinates[player_slot * 3 + 0];
+            pz = g->carCoordinates[player_slot * 3 + 2];
         } else {
             float est_s = spline_pos * spline_.total_length;
             spline_.frenetToWorld(est_s, 0.f, px, pz);
