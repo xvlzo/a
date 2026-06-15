@@ -7,7 +7,7 @@ set HUMANIZATION=0.7
 set SMOOTHNESS=0.6
 set SAFETY=1.2
 set CAR=0
-set SPLINE=data\fast_lane.aipp
+set SPLINE=data\fast_lane.aip
 
 :: ── Sanity checks ─────────────────────────────────────────────────────────────
 set EXE=build\Release\nohesi_bot.exe
