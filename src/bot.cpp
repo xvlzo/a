@@ -54,6 +54,10 @@ bool Bot::init() {
     }
     printf("[Bot] Spline loaded: %d points, %.0f m\n",
            spline_.size(), spline_.total_length);
+    if (spline_.size() > 0)
+        printf("[Bot] Spline origin: pt[0]=(%.1f, %.1f)  pt[last]=(%.1f, %.1f)\n",
+               spline_.pts[0].x, spline_.pts[0].z,
+               spline_.pts.back().x, spline_.pts.back().z);
 
     PlannerConfig pc;
     pc.target_kph      = cfg_.target_kph;
@@ -479,7 +483,11 @@ void Bot::planningLoop() {
         // On first active frame: full-scan to find correct hint and verify direction.
         if (!spline_dir_checked) {
             printf("[Bot] World pos: x=%.2f  z=%.2f  heading=%.3f rad\n", px, pz, heading);
+            printf("[Bot] Spline pt[0]: x=%.2f  z=%.2f  arc_len=%.1fm\n",
+                   spline_.pts[0].x, spline_.pts[0].z, spline_.pts[0].arc_length);
             FrenetState fs = spline_.project(px, pz, 0, spline_.size() / 2);
+            printf("[Bot] Nearest spline pt[%d]: x=%.2f  z=%.2f  d=%.1fm  s=%.1fm\n",
+                   fs.idx, spline_.pts[fs.idx].x, spline_.pts[fs.idx].z, fs.d, fs.s);
             float herr = heading - fs.road_heading;
             while (herr >  3.14159f) herr -= 6.28318f;
             while (herr < -3.14159f) herr += 6.28318f;
@@ -490,6 +498,11 @@ void Bot::planningLoop() {
             } else {
                 printf("[Bot] Spline direction OK\n");
             }
+            if (fs.d > 100.f)
+                printf("[Bot] WARNING: car is %.0fm from spline — wrong fast_lane.ai for this layout?\n"
+                       "[Bot]   Copy the correct file from:\n"
+                       "[Bot]   AC/content/tracks/shuto_revival_project_beta/<layout>/ai/fast_lane.ai\n",
+                       fs.d);
             // Warm up planner hint so first projection uses the correct index
             planner_->updateEgo(px, pz, speed_ms, heading, fs.idx);
             spline_dir_checked = true;
