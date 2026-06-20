@@ -86,18 +86,19 @@ void Spline::buildHeadings() {
     int N = size();
     headings.resize(N);
     if (N == 0) return;
+    if (N == 1) { headings[0] = 0.f; return; }
 
-    if (!ext.empty() && (int)ext.size() == N) {
-        for (int i = 0; i < N; ++i)
-            headings[i] = std::atan2(ext[i].fx, ext[i].fz);
-    } else {
-        for (int i = 0; i < N - 1; ++i) {
-            float dx = pts[i+1].x - pts[i].x;
-            float dz = pts[i+1].z - pts[i].z;
-            headings[i] = std::atan2(dx, dz);
-        }
-        headings[N-1] = headings[N-2];
+    // Always derive heading from point geometry, never from the stored ext
+    // forward vector. Point positions are unambiguously in the same world
+    // frame as the car position, so atan2(dx, dz) matches the car's
+    // atan2(look.x, look.z) convention exactly. The stored ext.fx/fz turned
+    // out to use an inconsistent convention, causing 180° heading errors.
+    for (int i = 0; i < N - 1; ++i) {
+        float dx = pts[i+1].x - pts[i].x;
+        float dz = pts[i+1].z - pts[i].z;
+        headings[i] = std::atan2(dx, dz);
     }
+    headings[N-1] = headings[N-2];
 }
 
 void Spline::projectToSegment(float px, float pz,

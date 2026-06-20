@@ -386,38 +386,54 @@ void Bot::planningLoop() {
 
         readOwnCar(px, pz, heading, speed_ms, spline_pos);
 
-        // On first active frame: heading-filtered full scan to find the right segment.
-        // A plain nearest-point search fails on full-network splines (SRP 326 km) because
-        // roads cross in every direction — the nearest point is often on the wrong road.
-        // We weight by heading: ignore any segment >90° off the car's direction.
+        // On first active frame: find the nearest spline point, then make the
+        // spline run the SAME direction as the car. On the SRP main layout the
+        // stored points can progress opposite to the travel direction; if so we
+        // reverse the whole spline once so heading errors stay small.
         if (!spline_dir_checked) {
-            printf("[Bot] World pos: x=%.2f  z=%.2f  heading=%.3f rad\n", px, pz, heading);
+            auto nearestIdx = [&](float qx, float qz) {
+                float best_d2 = 1e30f; int best = 0;
+                int N = spline_.size();
+                for (int i = 0; i < N; ++i) {
+                    float dx = spline_.pts[i].x - qx;
+                    float dz = spline_.pts[i].z - qz;
+                    float d2 = dx*dx + dz*dz;
+                    if (d2 < best_d2) { best_d2 = d2; best = i; }
+                }
+                return best;
+            };
+            auto herrDegAt = [&](int idx) {
+                float h = heading - spline_.headings[idx];
+                while (h >  3.14159f) h -= 6.28318f;
+                while (h < -3.14159f) h += 6.28318f;
+                return h * 57.2958f;
+            };
 
-            float best_score = 1e30f;
-            int   best_i     = 0;
-            int   N          = spline_.size();
-            for (int i = 0; i < N; i += 2) {   // sample every other point (~96k iters)
-                float dx = spline_.pts[i].x - px;
-                float dz = spline_.pts[i].z - pz;
-                float dist2 = dx*dx + dz*dz;
-                float hd = heading - spline_.headings[i];
-                while (hd >  3.14159f) hd -= 6.28318f;
-                while (hd < -3.14159f) hd += 6.28318f;
-                // Heavy penalty for segments pointing the wrong way
-                float score = dist2 + (std::abs(hd) > 1.5708f ? 1e8f : 0.f);
-                if (score < best_score) { best_score = score; best_i = i; }
+            int  idx       = nearestIdx(px, pz);
+            float herr_deg = herrDegAt(idx);
+            printf("[Bot] World pos x=%.1f z=%.1f  car_hdg=%.0fdeg | "
+                   "nearest pt[%d]=(%.1f,%.1f) road_hdg=%.0fdeg herr=%.0fdeg\n",
+                   px, pz, heading * 57.2958f, idx,
+                   spline_.pts[idx].x, spline_.pts[idx].z,
+                   spline_.headings[idx] * 57.2958f, herr_deg);
+
+            // If the nearest segment runs backward relative to the car, the whole
+            // spline is stored in reverse — flip it so we track in travel direction.
+            if (std::abs(herr_deg) > 90.f) {
+                spline_.reverse();
+                idx      = nearestIdx(px, pz);
+                herr_deg = herrDegAt(idx);
+                printf("[Bot] Spline was stored reversed — flipped. "
+                       "Now pt[%d] road_hdg=%.0fdeg herr=%.0fdeg\n",
+                       idx, spline_.headings[idx] * 57.2958f, herr_deg);
             }
 
-            FrenetState fs = spline_.project(px, pz, best_i, 80);
-            float herr_deg = (heading - fs.road_heading) * 57.2958f;
-            while (herr_deg >  180.f) herr_deg -= 360.f;
-            while (herr_deg < -180.f) herr_deg += 360.f;
-            printf("[Bot] Heading-matched pt[%d]: x=%.2f  z=%.2f  d=%.1fm  herr=%.0fdeg\n",
-                   fs.idx, spline_.pts[fs.idx].x, spline_.pts[fs.idx].z, fs.d, herr_deg);
-
-            if (std::abs(fs.d) > 50.f)
-                printf("[Bot] WARNING: nearest heading-matched segment is %.0fm away."
-                       " Car may not be on a road in the spline.\n", std::abs(fs.d));
+            FrenetState fs = spline_.project(px, pz, idx, 80);
+            printf("[Bot] Locked on pt[%d]: d=%.1fm s=%.1fm  (|herr|=%.0fdeg)\n",
+                   fs.idx, fs.d, fs.s, std::abs(herr_deg));
+            if (std::abs(fs.d) > 30.f)
+                printf("[Bot] WARNING: %.0fm from the line — wrong layout file, "
+                       "or car is off-road.\n", std::abs(fs.d));
 
             // Warm up both planner and control-loop hints
             planner_->updateEgo(px, pz, speed_ms, heading, fs.idx);

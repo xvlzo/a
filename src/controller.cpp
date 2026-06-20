@@ -49,6 +49,17 @@ ControlDemand StanleyController::update(float wx, float wz,
     // Heading error relative to road
     float herr = wrapAngle(heading - fs.road_heading);
 
+    // ── Wrong-way guard ─────────────────────────────────────────────────────────
+    // If the heading error is huge (>100°) the car is pointed against the racing
+    // line — either matched to the opposing carriageway or genuinely facing the
+    // wrong way. Steering hard into this just spins the car (donuts). Instead,
+    // ease off and coast straight so the situation can resolve without a spin.
+    if (std::abs(herr) > 1.745f) { // 100°
+        float steer = 0.6f * prev_steer_; // bleed off any existing lock toward centre
+        prev_steer_ = steer;
+        return { steer, 0.f, 0.2f, cte, herr };
+    }
+
     // ── Seek/merge mode ───────────────────────────────────────────────────────
     // Stanley saturates to full lock (→ donuts) when the car is far off the line,
     // e.g. spawned in a pit/staging area. When the offset is large, switch to a
