@@ -53,13 +53,14 @@ ControlDemand StanleyController::update(float wx, float wz,
     // Stanley saturates to full lock (→ donuts) when the car is far off the line,
     // e.g. spawned in a pit/staging area. When the offset is large, switch to a
     // pure-pursuit controller that aims at a lookahead point ON the racing line
-    // and drives toward it, merging smoothly. Hysteresis: enter at 8 m, exit at 4 m.
+    // and drives toward it, merging smoothly. Hysteresis: enter at 8 m, exit at 6 m.
     if (!seeking_ && std::abs(cte) > 8.f)  seeking_ = true;
-    if ( seeking_ && std::abs(cte) < 4.f)  seeking_ = false;
+    if ( seeking_ && std::abs(cte) < 6.f)  seeking_ = false;
 
     if (seeking_) {
-        // Lookahead grows with speed and with how far off we are → shallow merge
-        float L = std::clamp(speed_ms * 1.5f + 0.3f * std::abs(cte), 15.f, 50.f);
+        // Lookahead scales with both speed and CTE so the approach angle never
+        // saturates the steering — prevents overshoot oscillation.
+        float L = std::clamp(speed_ms * 2.0f + 3.0f * std::abs(cte), 30.f, 150.f);
         float s_target = fs.s + L;
         if (spline_.total_length > 1.f)
             s_target = std::fmod(s_target, spline_.total_length);
@@ -73,13 +74,15 @@ ControlDemand StanleyController::update(float wx, float wz,
         float seek_err   = wrapAngle(heading - ang);
         float raw        = std::clamp(seek_err, -max_steer_rad_, max_steer_rad_);
         float steer_raw  = raw / max_steer_rad_;
-        float steer      = 0.25f * steer_raw + 0.75f * prev_steer_;
+        float steer      = 0.5f * steer_raw + 0.5f * prev_steer_;  // less lag than 0.75
         prev_steer_      = steer;
 
-        // Gentle, capped throttle while merging (don't rocket off the line)
-        float merge_v    = std::min(target_v_ms, 22.f); // ~80 kph cap
+        // Speed proportional to CTE: slow down as we approach the line to avoid
+        // overshooting. 30 kph floor so car always makes progress; 60 kph ceiling.
+        float merge_kph  = std::clamp(15.f + 3.f * std::abs(cte), 30.f, 60.f);
+        float merge_v    = merge_kph / 3.6f;
         float accel      = speed_pid_.update(merge_v - speed_ms, dt);
-        float throttle   = std::clamp(accel, 0.f, 0.5f);
+        float throttle   = std::clamp(accel, 0.f, 0.6f);
         float brake      = std::clamp(-accel / 3.f, 0.f, 1.f);
         return { steer, throttle, brake, cte, herr };
     }
