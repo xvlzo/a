@@ -272,7 +272,7 @@ void Bot::controlLoop() {
             {
                 static int diag = 0;
                 if (++diag % 333 == 0) {
-                    FrenetState fs = spline_.project(px, pz, plan.hint_idx, 80);
+                    FrenetState fs = spline_.project(px, pz, plan.hint_idx, 80, heading);
                     float lx, lz;
                     spline_.frenetToWorld(fs.s, 0.f, lx, lz);
                     float herr_deg = raw.heading_err * 57.2958f;
@@ -757,7 +757,7 @@ std::vector<TrafficCar> Bot::readTrafficFromLua() {
     result.reserve(cars.size());
     for (const auto& c : cars) {
         if (c.speed_kmh < 1.f) continue;
-        FrenetState fs = spline_.project(c.x, c.z, planner_->hintIdx(), 100);
+        FrenetState fs = spline_.project(c.x, c.z, planner_->hintIdx(), 100, c.heading);
         float herr = c.heading - fs.road_heading;
         while (herr >  3.14159f) herr -= 6.28318f;
         while (herr < -3.14159f) herr += 6.28318f;

@@ -109,22 +109,39 @@ float Spline::signedOffset(float px, float pz,
     return (abx*apz - abz*apx) / len;
 }
 
-FrenetState Spline::project(float wx, float wz, int hint_idx, int window) const {
+FrenetState Spline::project(float wx, float wz, int hint_idx, int window,
+                             float heading_filter) const {
     int N = size();
     if (N < 2) return {};
 
-    // Coarse: nearest point in window — wraps at start/finish line
-    float best_d2 = 1e30f;
-    int best_i = ((hint_idx % N) + N) % N;
+    bool use_filter = heading_filter < 1e8f;
+
+    // Coarse: nearest point in window — wraps at start/finish line.
+    // When heading_filter is provided, prefer points within 90° of that heading
+    // to avoid snapping onto an opposing or physically unrelated road segment.
+    float best_d2         = 1e30f;
+    float best_aligned_d2 = 1e30f;
+    int   best_i          = ((hint_idx % N) + N) % N;
+    int   best_aligned_i  = -1;
+
     for (int di = -window; di <= window; ++di) {
         int i = ((hint_idx + di) % N + N) % N;
         float dx = pts[i].x - wx, dz = pts[i].z - wz;
         float d2 = dx*dx + dz*dz;
         if (d2 < best_d2) { best_d2 = d2; best_i = i; }
+
+        if (use_filter) {
+            float hd = heading_filter - headings[i];
+            while (hd >  3.14159f) hd -= 6.28318f;
+            while (hd < -3.14159f) hd += 6.28318f;
+            if (std::abs(hd) < 1.5708f && d2 < best_aligned_d2) {
+                best_aligned_d2 = d2; best_aligned_i = i;
+            }
+        }
     }
 
-    // Fine: segment projection (wrap last segment back to index 0)
-    int i0 = best_i;
+    // Use heading-aligned result when available; fall back to nearest-any.
+    int i0 = (use_filter && best_aligned_i >= 0) ? best_aligned_i : best_i;
     int i1 = (i0 + 1) % N;
 
     float t, cx, cz;

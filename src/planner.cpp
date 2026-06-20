@@ -120,7 +120,7 @@ void FrenetPlanner::updateEgo(float wx, float wz, float speed_ms,
                                float heading, int hint_idx) {
     auto now = std::chrono::steady_clock::now();
 
-    FrenetState fs = spline_.project(wx, wz, hint_idx, 80);
+    FrenetState fs = spline_.project(wx, wz, hint_idx, 80, heading);
     hint_idx_ = fs.idx;
     ego_s_ = fs.s;
     ego_d_ = fs.d;

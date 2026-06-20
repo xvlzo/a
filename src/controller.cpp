@@ -37,7 +37,7 @@ ControlDemand StanleyController::update(float wx, float wz,
                                          float target_d, float target_v_ms,
                                          float dt, int hint_idx,
                                          float yaw_rate_rad_s) {
-    FrenetState fs = spline_.project(wx, wz, hint_idx, 80);
+    FrenetState fs = spline_.project(wx, wz, hint_idx, 80, heading);
     last_hint_ = fs.idx;
 
     // Cross-track error: signed distance from desired lateral offset

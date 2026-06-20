@@ -43,8 +43,12 @@ public:
     void buildHeadings();
 
     // Project world (x, z) onto spline. Returns FrenetState.
-    // hint_idx: start search near this index (avoids full scan)
-    FrenetState project(float wx, float wz, int hint_idx = 0, int window = 80) const;
+    // hint_idx: start search near this index (avoids full scan).
+    // heading_filter: if < 1e8, skip window candidates going more than 90° off this heading.
+    //   Prevents locking onto an opposing carriageway when SRP's sequential spline
+    //   indices span physically disjoint road segments.
+    FrenetState project(float wx, float wz, int hint_idx = 0, int window = 80,
+                        float heading_filter = 1e9f) const;
 
     // Convert Frenet (s, d) → world (x, z)
     void frenetToWorld(float s, float d, float& wx, float& wz) const;
