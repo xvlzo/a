@@ -19,8 +19,11 @@ if not exist "%EXE%" (
 
 if not exist "%SPLINE%" (
     echo [RUN] %SPLINE% not found.
-    echo       Copy fast_lane.ai from:
-    echo       assettocorsa\content\tracks\shuto_revival_project_beta\ai\fast_lane.ai
+    echo       Copy the correct file to data\fast_lane.ai:
+    echo.
+    echo       xcopy /Y "C:\Program Files (x86)\Steam\steamapps\common\assettocorsa\content\tracks\shuto_revival_project_beta\main\ai\fast_lane.ai" "%~dp0data\"
+    echo.
+    echo       Run that line in a command prompt, then retry.
     pause & exit /b 1
 )
 
