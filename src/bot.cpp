@@ -254,7 +254,7 @@ void Bot::controlLoop() {
             ControlDemand raw = controller_->update(
                 px, pz, heading, speed_ms,
                 plan.target_d, plan.target_v, dt,
-                controller_->lastHintIdx(), yaw_rate);
+                plan.hint_idx, yaw_rate);
 
             wheel_out = wheel_->process(raw.steer, raw.throttle, raw.brake, dt);
 
@@ -263,7 +263,7 @@ void Bot::controlLoop() {
             {
                 static int diag = 0;
                 if (++diag % 333 == 0) {
-                    FrenetState fs = spline_.project(px, pz, controller_->lastHintIdx(), 80);
+                    FrenetState fs = spline_.project(px, pz, plan.hint_idx, 80);
                     float lx, lz;
                     spline_.frenetToWorld(fs.s, 0.f, lx, lz);
                     float herr_deg = raw.heading_err * 57.2958f;
@@ -475,6 +475,7 @@ void Bot::planningLoop() {
                                   std::min(cfg_.max_kph / 3.6f, traj.target_ds));
         out.ego_d      = planner_->egoD();
         out.plan_dt_ms = plan_ms;
+        out.hint_idx   = planner_->hintIdx();
 
         { std::lock_guard<std::mutex> lk(plan_mutex_); latest_plan_ = out; }
         // plan_dt_ms is picked up by control thread via PlanOutput — no direct status_ write here

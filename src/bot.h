@@ -38,6 +38,7 @@ struct PlanOutput {
     float target_v   = 44.f; // m/s
     float ego_d      = 0.f;  // ego Frenet d (for status/logging)
     float plan_dt_ms = 0.f;
+    int   hint_idx   = 0;    // planner's nearest spline index — seeds the controller
 };
 
 // ── Bot state machine ────────────────────────────────────────────────────────
