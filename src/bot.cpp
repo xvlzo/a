@@ -267,10 +267,11 @@ void Bot::controlLoop() {
                     float lx, lz;
                     spline_.frenetToWorld(fs.s, 0.f, lx, lz);
                     float herr_deg = raw.heading_err * 57.2958f;
-                    printf("[Diag] car=(%.1f,%.1f) line=(%.1f,%.1f) cte=%.1fm herr=%.0fdeg "
-                           "steer=%.2f tgt_d=%.1f spd=%.0f\n",
-                           px, pz, lx, lz, raw.cte, herr_deg,
-                           wheel_out.steer, plan.target_d, speed_ms * 3.6f);
+                    printf("[Diag] car=(%.1f,%.1f) cte=%.1fm herr=%.0fdeg "
+                           "steer=%.2f thr=%.2f brk=%.2f tgt_d=%.1f spd=%.0f\n",
+                           px, pz, raw.cte, herr_deg,
+                           wheel_out.steer, wheel_out.throttle, wheel_out.brake,
+                           plan.target_d, speed_ms * 3.6f);
                 }
             }
 
