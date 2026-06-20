@@ -190,6 +190,14 @@ void Bot::controlLoop() {
                 is_active_ = true;
                 wheel_->reset();
                 controller_->reset();
+                // Full-scan to seed plan.hint_idx before the controller's first call.
+                // Without this, hint_idx=0 + small search window → wrong projection
+                // → CTE > 8m → seek mode spuriously triggered on frame 1.
+                {
+                    FrenetState fs = spline_.project(px, pz, 0, spline_.size());
+                    std::lock_guard<std::mutex> lk(plan_mutex_);
+                    latest_plan_.hint_idx = fs.idx;
+                }
                 if (own_car_mm_.valid)
                     last_collision_counter_ =
                         static_cast<const CarData*>(own_car_mm_.pView)->collision_counter;
