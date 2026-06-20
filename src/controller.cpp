@@ -19,11 +19,9 @@ void PID::reset() {
     first_    = true;
 }
 
-// ── StanleyController ─────────────────────────────────────────────────────────
-StanleyController::StanleyController(const Spline& spline,
-                                     float ke, float ks,
-                                     float max_steer_deg)
-    : spline_(spline), ke_(ke), ks_(ks),
+// ── StanleyController (pure-pursuit) ──────────────────────────────────────────
+StanleyController::StanleyController(const Spline& spline, float max_steer_deg)
+    : spline_(spline),
       max_steer_rad_(max_steer_deg * 3.14159f / 180.f),
       speed_pid_(0.08f, 0.012f, 0.008f, 50.f)
 {}
@@ -60,61 +58,46 @@ ControlDemand StanleyController::update(float wx, float wz,
         return { steer, 0.f, 0.2f, cte, herr };
     }
 
-    // ── Seek/merge mode ───────────────────────────────────────────────────────
-    // Stanley saturates to full lock (→ donuts) when the car is far off the line,
-    // e.g. spawned in a pit/staging area. When the offset is large, switch to a
-    // pure-pursuit controller that aims at a lookahead point ON the racing line
-    // and drives toward it, merging smoothly. Hysteresis: enter at 8 m, exit at 6 m.
-    if (!seeking_ && std::abs(cte) > 8.f)  seeking_ = true;
-    if ( seeking_ && std::abs(cte) < 6.f)  seeking_ = false;
+    // ── Pure-pursuit lateral control ────────────────────────────────────────────
+    // Aim at a point further along the racing line and steer toward it. Unlike
+    // Stanley, pure pursuit does NOT blow up at low speed — the steering angle is
+    // pure geometry (bearing to the lookahead point), bounded and smooth.
+    float L = std::clamp(0.9f * speed_ms + 14.f, 14.f, 45.f); // lookahead (m)
+    float s_target = fs.s + L;
+    if (spline_.total_length > 1.f)
+        s_target = std::fmod(s_target, spline_.total_length);
 
-    if (seeking_) {
-        // Lookahead scales with both speed and CTE so the approach angle never
-        // saturates the steering — prevents overshoot oscillation.
-        float L = std::clamp(speed_ms * 2.0f + 3.0f * std::abs(cte), 30.f, 150.f);
-        float s_target = fs.s + L;
-        if (spline_.total_length > 1.f)
-            s_target = std::fmod(s_target, spline_.total_length);
+    float tx, tz;
+    spline_.frenetToWorld(s_target, target_d, tx, tz);
 
-        float tx, tz;
-        spline_.frenetToWorld(s_target, target_d, tx, tz);
+    // Bearing to the lookahead point, same convention as herr:
+    // reference = direction car→target; error = heading - reference.
+    float ang       = std::atan2(tx - wx, tz - wz);
+    float err       = wrapAngle(heading - ang);
+    float steer_cmd = std::clamp(err / max_steer_rad_, -1.f, 1.f);
 
-        // Steer toward the target point. Same convention as Stanley's herr:
-        // reference heading = direction car→target; error = heading - reference.
-        float ang        = std::atan2(tx - wx, tz - wz);
-        float seek_err   = wrapAngle(heading - ang);
-        float raw        = std::clamp(seek_err, -max_steer_rad_, max_steer_rad_);
-        float steer_raw  = raw / max_steer_rad_;
-        float steer      = 0.5f * steer_raw + 0.5f * prev_steer_;  // less lag than 0.75
-        prev_steer_      = steer;
+    // Yaw-rate damping to settle heading oscillation (steer>0 = left in AC).
+    steer_cmd -= 0.15f * yaw_rate_rad_s;
+    steer_cmd  = std::clamp(steer_cmd, -1.f, 1.f);
 
-        // Speed proportional to CTE: slow down as we approach the line to avoid
-        // overshooting. 30 kph floor so car always makes progress; 60 kph ceiling.
-        float merge_kph  = std::clamp(15.f + 3.f * std::abs(cte), 30.f, 60.f);
-        float merge_v    = merge_kph / 3.6f;
-        float accel      = speed_pid_.update(merge_v - speed_ms, dt);
-        float throttle   = std::clamp(accel, 0.f, 0.6f);
-        float brake      = std::clamp(-accel / 3.f, 0.f, 1.f);
-        return { steer, throttle, brake, cte, herr };
-    }
+    // Speed-scaled steering authority: at a standstill, big steering just pivots
+    // the car in place (→ spin into the wall). Allow only gentle steer until the
+    // car is rolling, then ramp to full authority by ~15 m/s. This makes the car
+    // drive forward to build speed first, then merge onto the line.
+    float auth = std::clamp(0.18f + speed_ms * (0.82f / 15.f), 0.18f, 1.f);
+    steer_cmd  = std::clamp(steer_cmd, -auth, auth);
 
-    // Stanley: δ = heading_err - arctan(ke * cte / (v + ks))
-    // Negative sign: in AC steer<0=right, d>0=left, so CTE correction must be negated
-    float stanley = -std::atan2(ke_ * cte, speed_ms + ks_);
-
-    // Yaw-rate damping: counteracts heading oscillation using smooth measured yaw rate.
-    // yaw_rate_rad_s > 0 = turning left; in AC steer>0 = left, so subtract to oppose.
-    float raw_rad = herr + stanley - 0.3f * yaw_rate_rad_s;
-    raw_rad = std::clamp(raw_rad, -max_steer_rad_, max_steer_rad_);
-    float steer_raw = raw_rad / max_steer_rad_; // normalise to [-1, 1]
-    // Light IIR to filter frame-to-frame noise without adding meaningful lag
-    float steer = 0.25f * steer_raw + 0.75f * prev_steer_;
+    // Steering rate limit: no instant lurch from the previous value.
+    float max_delta = 3.0f * dt; // full lock-to-lock in ~0.66 s
+    float steer = std::clamp(steer_cmd, prev_steer_ - max_delta, prev_steer_ + max_delta);
     prev_steer_ = steer;
 
-    // Longitudinal PID
-    float accel = speed_pid_.update(target_v_ms - speed_ms, dt);
+    // ── Longitudinal: cap speed until merged so we never rocket off the line ────
+    bool  merged   = std::abs(cte) < 3.f && std::abs(herr) < 0.35f; // <20°
+    float target_v = merged ? target_v_ms : std::min(target_v_ms, 50.f / 3.6f);
+    float accel    = speed_pid_.update(target_v - speed_ms, dt);
     float throttle = std::clamp(accel, 0.f, 1.f);
-    float brake    = std::clamp(-accel / 3.f, 0.f, 1.f); // 3 m/s² = full brake
+    float brake    = std::clamp(-accel / 3.f, 0.f, 1.f);
 
     return { steer, throttle, brake, cte, herr };
 }
@@ -122,5 +105,4 @@ ControlDemand StanleyController::update(float wx, float wz,
 void StanleyController::reset() {
     speed_pid_.reset();
     prev_steer_ = 0.f;
-    seeking_    = false;
 }

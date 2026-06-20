@@ -170,6 +170,10 @@ private:
     bool readOwnCar(float& px, float& pz, float& heading,
                     float& speed_ms, float& spline_pos);
 
+    // Find the nearest spline index whose heading matches the car's (within 90°).
+    // Falls back to globally-nearest and sets wrong_way if nothing aligned is near.
+    int findStartIndex(float px, float pz, float heading, bool& wrong_way) const;
+
     // Read + project traffic into Frenet
     std::vector<TrafficCar> readTraffic();
     std::vector<TrafficCar> readTrafficFromGraphics(); // fallback when CSP mmaps unavailable

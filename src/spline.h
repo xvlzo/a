@@ -41,7 +41,6 @@ public:
 
     bool load(const std::string& path);
     void buildHeadings();
-    void reverse(); // flip point order + rebuild — call if spline runs opposite to car
 
     // Project world (x, z) onto spline. Returns FrenetState.
     // hint_idx: start search near this index (avoids full scan)

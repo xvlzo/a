@@ -190,13 +190,14 @@ void Bot::controlLoop() {
                 is_active_ = true;
                 wheel_->reset();
                 controller_->reset();
-                // Full-scan to seed plan.hint_idx before the controller's first call.
-                // Without this, hint_idx=0 + small search window → wrong projection
-                // → CTE > 8m → seek mode spuriously triggered on frame 1.
+                // Heading-filtered scan to seed plan.hint_idx before the controller's
+                // first call, so the very first frame projects onto the correct lane
+                // (not the opposing carriageway) — same logic the planning loop uses.
                 {
-                    FrenetState fs = spline_.project(px, pz, 0, spline_.size());
+                    bool ww = false;
+                    int  idx = findStartIndex(px, pz, heading, ww);
                     std::lock_guard<std::mutex> lk(plan_mutex_);
-                    latest_plan_.hint_idx = fs.idx;
+                    latest_plan_.hint_idx = idx;
                 }
                 if (own_car_mm_.valid)
                     last_collision_counter_ =
@@ -386,54 +387,32 @@ void Bot::planningLoop() {
 
         readOwnCar(px, pz, heading, speed_ms, spline_pos);
 
-        // On first active frame: find the nearest spline point, then make the
-        // spline run the SAME direction as the car. On the SRP main layout the
-        // stored points can progress opposite to the travel direction; if so we
-        // reverse the whole spline once so heading errors stay small.
+        // On first active frame: lock onto the nearest spline point whose heading
+        // matches the car's (within 90°). The SRP spline is one long ribbon that
+        // runs out one carriageway and back the other; the globally-nearest point
+        // is often the OPPOSING lane (~12m away, 180° off). Filtering by heading
+        // picks the lane going our way. We never reverse the whole spline — that
+        // would break every other part of the loop.
         if (!spline_dir_checked) {
-            auto nearestIdx = [&](float qx, float qz) {
-                float best_d2 = 1e30f; int best = 0;
-                int N = spline_.size();
-                for (int i = 0; i < N; ++i) {
-                    float dx = spline_.pts[i].x - qx;
-                    float dz = spline_.pts[i].z - qz;
-                    float d2 = dx*dx + dz*dz;
-                    if (d2 < best_d2) { best_d2 = d2; best = i; }
-                }
-                return best;
-            };
-            auto herrDegAt = [&](int idx) {
-                float h = heading - spline_.headings[idx];
-                while (h >  3.14159f) h -= 6.28318f;
-                while (h < -3.14159f) h += 6.28318f;
-                return h * 57.2958f;
-            };
-
-            int  idx       = nearestIdx(px, pz);
-            float herr_deg = herrDegAt(idx);
-            printf("[Bot] World pos x=%.1f z=%.1f  car_hdg=%.0fdeg | "
-                   "nearest pt[%d]=(%.1f,%.1f) road_hdg=%.0fdeg herr=%.0fdeg\n",
-                   px, pz, heading * 57.2958f, idx,
-                   spline_.pts[idx].x, spline_.pts[idx].z,
-                   spline_.headings[idx] * 57.2958f, herr_deg);
-
-            // If the nearest segment runs backward relative to the car, the whole
-            // spline is stored in reverse — flip it so we track in travel direction.
-            if (std::abs(herr_deg) > 90.f) {
-                spline_.reverse();
-                idx      = nearestIdx(px, pz);
-                herr_deg = herrDegAt(idx);
-                printf("[Bot] Spline was stored reversed — flipped. "
-                       "Now pt[%d] road_hdg=%.0fdeg herr=%.0fdeg\n",
-                       idx, spline_.headings[idx] * 57.2958f, herr_deg);
-            }
+            bool wrong_way = false;
+            int  idx = findStartIndex(px, pz, heading, wrong_way);
 
             FrenetState fs = spline_.project(px, pz, idx, 80);
-            printf("[Bot] Locked on pt[%d]: d=%.1fm s=%.1fm  (|herr|=%.0fdeg)\n",
-                   fs.idx, fs.d, fs.s, std::abs(herr_deg));
-            if (std::abs(fs.d) > 30.f)
-                printf("[Bot] WARNING: %.0fm from the line — wrong layout file, "
-                       "or car is off-road.\n", std::abs(fs.d));
+            float herr_deg = (heading - fs.road_heading) * 57.2958f;
+            while (herr_deg >  180.f) herr_deg -= 360.f;
+            while (herr_deg < -180.f) herr_deg += 360.f;
+            printf("[Bot] World pos x=%.1f z=%.1f car_hdg=%.0fdeg | "
+                   "locked pt[%d]=(%.1f,%.1f) road_hdg=%.0fdeg d=%.1fm herr=%.0fdeg\n",
+                   px, pz, heading * 57.2958f, fs.idx,
+                   spline_.pts[fs.idx].x, spline_.pts[fs.idx].z,
+                   fs.road_heading * 57.2958f, fs.d, herr_deg);
+            if (wrong_way)
+                printf("[Bot] WARNING: no racing line within 60m pointing your way.\n"
+                       "[Bot]   You're likely facing AGAINST traffic — turn around,\n"
+                       "[Bot]   face the normal flow of the highway, then press F5.\n");
+            else if (std::abs(fs.d) > 20.f)
+                printf("[Bot] NOTE: %.0fm from the line — it'll merge over before tracking.\n",
+                       std::abs(fs.d));
 
             // Warm up both planner and control-loop hints
             planner_->updateEgo(px, pz, speed_ms, heading, fs.idx);
@@ -608,6 +587,31 @@ void Bot::hotkeyLoop() {
     UnregisterHotKey(nullptr, 6);
     UnregisterHotKey(nullptr, 7);
     UnregisterHotKey(nullptr, 8);
+}
+
+// ─── Spline start-index match (heading-filtered) ──────────────────────────────
+int Bot::findStartIndex(float px, float pz, float heading, bool& wrong_way) const {
+    int   N = spline_.size();
+    float best_aligned_d2 = 1e30f; int best_aligned_i = -1;
+    float best_any_d2     = 1e30f; int best_any_i     = 0;
+    for (int i = 0; i < N; ++i) {
+        float dx = spline_.pts[i].x - px;
+        float dz = spline_.pts[i].z - pz;
+        float d2 = dx*dx + dz*dz;
+        if (d2 < best_any_d2) { best_any_d2 = d2; best_any_i = i; }
+        float hd = heading - spline_.headings[i];
+        while (hd >  3.14159f) hd -= 6.28318f;
+        while (hd < -3.14159f) hd += 6.28318f;
+        if (std::abs(hd) < 1.5708f && d2 < best_aligned_d2) {
+            best_aligned_d2 = d2; best_aligned_i = i;
+        }
+    }
+    if (best_aligned_i >= 0 && best_aligned_d2 < 60.f * 60.f) {
+        wrong_way = false;
+        return best_aligned_i;
+    }
+    wrong_way = true;     // nothing aligned within 60 m — car faces against traffic
+    return best_any_i;
 }
 
 // ─── Own car read ──────────────────────────────────────────────────────────────

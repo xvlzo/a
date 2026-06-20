@@ -27,14 +27,11 @@ private:
     bool  first_    = true;
 };
 
+// Pure-pursuit lateral controller + PID longitudinal controller.
+// (Kept the StanleyController name to avoid churn across the codebase.)
 class StanleyController {
 public:
-    StanleyController(const Spline& spline,
-                      float ke = 1.0f,
-                      float ks = 1.0f,
-                      float max_steer_deg = 30.f);
-
-    void setGains(float ke, float ks) { ke_ = ke; ks_ = ks; }
+    StanleyController(const Spline& spline, float max_steer_deg = 30.f);
 
     // Compute desired control demand.
     // target_d: lateral offset from centre-line (Frenet d, metres)
@@ -54,10 +51,8 @@ public:
 
 private:
     const Spline& spline_;
-    float ke_, ks_;
     float max_steer_rad_;
     PID   speed_pid_;
     int   last_hint_ = 0;
     float prev_steer_ = 0.f;
-    bool  seeking_    = false; // true while merging onto the line from a large offset
 };
