@@ -475,6 +475,256 @@ def _sdb_shims(paths: list, reporter: StatusReporter) -> None:
         reporter.skip(CAT, artifact, "No matching SDB files found")
 
 
+def _reg_transaction_logs(reporter: StatusReporter) -> None:
+    """
+    Registry hive transaction logs (.LOG/.LOG1/.LOG2) are journaled copies of
+    recent registry changes. Forensic tools replay these to recover keys we just
+    deleted (BAM, UserAssist, MuiCache). Truncating prevents journal recovery.
+    """
+    artifact = "Registry hive transaction logs"
+    reporter.running(CAT, artifact)
+    dirs_and_hives = [
+        (r"C:\Windows\System32\config",
+         ["SYSTEM", "SOFTWARE", "SAM", "SECURITY", "DEFAULT"]),
+        (os.path.expandvars(r"%USERPROFILE%"),
+         ["NTUSER.DAT"]),
+        (os.path.expandvars(r"%USERPROFILE%\AppData\Local\Microsoft\Windows"),
+         ["UsrClass.dat"]),
+    ]
+    truncated = 0
+    for d, hives in dirs_and_hives:
+        if not os.path.isdir(d):
+            continue
+        for hive in hives:
+            for ext in [".LOG", ".LOG1", ".LOG2"]:
+                fpath = os.path.join(d, hive + ext)
+                if os.path.isfile(fpath):
+                    try:
+                        open(fpath, "wb").close()
+                        truncated += 1
+                    except Exception:
+                        pass
+    if truncated:
+        reporter.ok(CAT, artifact, f"Truncated {truncated} transaction log(s)")
+    else:
+        reporter.skip(CAT, artifact, "No registry transaction logs found")
+
+
+def _reg_backup(reporter: StatusReporter) -> None:
+    """
+    C:\\Windows\\System32\\config\\RegBack\\ holds Windows-scheduled backup copies
+    of all HKLM hives. Forensic tools restore these to recover deleted registry keys.
+    """
+    artifact = "RegBack (registry hive backups)"
+    reporter.running(CAT, artifact)
+    regback = r"C:\Windows\System32\config\RegBack"
+    truncated = 0
+    if os.path.isdir(regback):
+        for fname in os.listdir(regback):
+            fpath = os.path.join(regback, fname)
+            if os.path.isfile(fpath):
+                try:
+                    open(fpath, "wb").close()
+                    truncated += 1
+                except Exception:
+                    pass
+    if truncated:
+        reporter.ok(CAT, artifact, f"Truncated {truncated} RegBack file(s)")
+    else:
+        reporter.skip(CAT, artifact, "RegBack directory not found or empty")
+
+
+def _pca_database(paths: list, reporter: StatusReporter) -> None:
+    """
+    PCA (Program Compatibility Assistant) Install.db records program execution
+    separately from Amcache.hve. Newer Windows versions use SQLite format.
+    """
+    artifact = "PCA execution database (Install.db)"
+    reporter.running(CAT, artifact)
+    pca_db = r"C:\Windows\appcompat\Programs\Install.db"
+    if not os.path.exists(pca_db):
+        reporter.skip(CAT, artifact, "Install.db not found")
+        return
+    basenames_lower = {os.path.basename(p).lower() for p in paths}
+    path_set_lower = {p.lower() for p in paths}
+    try:
+        import sqlite3
+        conn = sqlite3.connect(pca_db)
+        c = conn.cursor()
+        c.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = [r[0] for r in c.fetchall()]
+        deleted = 0
+        for table in tables:
+            try:
+                c.execute(f"PRAGMA table_info([{table}])")
+                cols = [r[1] for r in c.fetchall()]
+                for col in cols:
+                    for b in basenames_lower:
+                        try:
+                            c.execute(f"DELETE FROM [{table}] WHERE lower([{col}]) LIKE ?", (f"%{b}%",))
+                            deleted += c.rowcount
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+        conn.commit()
+        conn.close()
+        if deleted:
+            reporter.ok(CAT, artifact, f"Deleted {deleted} PCA row(s)")
+        else:
+            reporter.skip(CAT, artifact, "No matching PCA entries found")
+    except Exception:
+        try:
+            with open(pca_db, "rb") as f:
+                content = f.read()
+            found = any(b.encode() in content or b.encode("utf-16-le") in content
+                        for b in basenames_lower)
+            if found:
+                _run(["sc", "stop", "PcaSvc"])
+                time.sleep(0.5)
+                try:
+                    os.remove(pca_db)
+                    reporter.ok(CAT, artifact, "Deleted (binary format — full clear; PcaSvc will rebuild)")
+                except Exception as e:
+                    reporter.warn(CAT, artifact, f"Could not delete: {e}")
+                _run(["sc", "start", "PcaSvc"])
+            else:
+                reporter.skip(CAT, artifact, "No matching entries in binary scan")
+        except Exception as e:
+            reporter.warn(CAT, artifact, str(e))
+
+
+def _ps_scriptblock_log(paths: list, reporter: StatusReporter) -> None:
+    """
+    PowerShell ScriptBlock logging writes the full text of every PS command
+    (including file paths) to the Operational event log. Clear the log, disable
+    future logging via policy registry, and remove any transcript files.
+    """
+    artifact = "PowerShell ScriptBlock logging"
+    reporter.running(CAT, artifact)
+    _clear_log_no_1102("Microsoft-Windows-PowerShell/Operational")
+    _run(["wevtutil", "cl", "Windows PowerShell"])
+    try:
+        import winreg
+        for key_path, val_name in [
+            (r"SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging",
+             "EnableScriptBlockLogging"),
+            (r"SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging",
+             "EnableScriptBlockInvocationLogging"),
+            (r"SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging",
+             "EnableModuleLogging"),
+        ]:
+            try:
+                key = winreg.CreateKey(winreg.HKEY_LOCAL_MACHINE, key_path)
+                winreg.SetValueEx(key, val_name, 0, winreg.REG_DWORD, 0)
+                winreg.CloseKey(key)
+            except Exception:
+                pass
+    except ImportError:
+        pass
+    basenames_lower = {os.path.basename(p).lower() for p in paths}
+    deleted = 0
+    for pattern in [
+        os.path.expandvars(r"%USERPROFILE%\Documents\PowerShell_transcript*.txt"),
+        os.path.expandvars(r"%USERPROFILE%\Desktop\PowerShell_transcript*.txt"),
+        r"C:\Transcripts\**\*.txt",
+    ]:
+        for tf in glob.glob(pattern, recursive=True):
+            try:
+                with open(tf, "r", encoding="utf-8", errors="ignore") as f:
+                    if any(b in f.read().lower() for b in basenames_lower):
+                        os.remove(tf)
+                        deleted += 1
+            except Exception:
+                pass
+    detail = "Operational logs cleared; ScriptBlock/Module logging disabled"
+    if deleted:
+        detail += f"; {deleted} transcript(s) removed"
+    reporter.ok(CAT, artifact, detail)
+
+
+def _task_scheduler_log(paths: list, reporter: StatusReporter) -> None:
+    """
+    Task Scheduler operational log records every task execution with full command
+    lines. Also scans task XML definitions for references to target paths.
+    """
+    artifact = "Task Scheduler log & task files"
+    reporter.running(CAT, artifact)
+    basenames_lower = {os.path.basename(p).lower() for p in paths}
+    path_set_lower = {p.lower() for p in paths}
+    sched_log = "Microsoft-Windows-TaskScheduler/Operational"
+    hit = _log_contains_path(sched_log, list(basenames_lower), timeout=15)
+    cleared_log = False
+    if hit:
+        rc, _ = _clear_log_no_1102(sched_log)
+        cleared_log = rc == 0
+    tasks_dir = r"C:\Windows\System32\Tasks"
+    deleted_tasks = 0
+    if os.path.isdir(tasks_dir):
+        for root, dirs, files in os.walk(tasks_dir):
+            for fname in files:
+                fpath = os.path.join(root, fname)
+                try:
+                    with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                        content = f.read().lower()
+                    if (any(b in content for b in basenames_lower) or
+                            any(p in content for p in path_set_lower)):
+                        rel = os.path.relpath(fpath, tasks_dir)
+                        _run(["schtasks", "/delete", "/tn", rel.replace(os.sep, "\\"), "/f"])
+                        try:
+                            os.remove(fpath)
+                            deleted_tasks += 1
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+    parts = []
+    if cleared_log:
+        parts.append("Task Scheduler log cleared")
+    if deleted_tasks:
+        parts.append(f"{deleted_tasks} task definition(s) removed")
+    if parts:
+        reporter.ok(CAT, artifact, "; ".join(parts))
+    else:
+        reporter.skip(CAT, artifact, "No Task Scheduler references to target found")
+
+
+def _setup_api_logs(paths: list, reporter: StatusReporter) -> None:
+    """
+    SetupAPI logs record driver installs and app compatibility events that
+    reference executable paths. Strip matching lines rather than full deletion.
+    """
+    artifact = "SetupAPI logs"
+    reporter.running(CAT, artifact)
+    basenames_lower = {os.path.basename(p).lower() for p in paths}
+    log_files = [
+        r"C:\Windows\setupapi.log",
+        r"C:\Windows\Logs\SetupAPI\setupapi.dev.log",
+        r"C:\Windows\Logs\SetupAPI\setupapi.app.log",
+        r"C:\Windows\inf\setupapi.dev.log",
+        r"C:\Windows\inf\setupapi.app.log",
+    ]
+    cleaned = 0
+    for lf in log_files:
+        if not os.path.isfile(lf):
+            continue
+        try:
+            with open(lf, "r", encoding="utf-8", errors="ignore") as f:
+                lines = f.readlines()
+            before = len(lines)
+            filtered = [l for l in lines if not any(b in l.lower() for b in basenames_lower)]
+            if len(filtered) < before:
+                with open(lf, "w", encoding="utf-8") as f:
+                    f.writelines(filtered)
+                cleaned += before - len(filtered)
+        except Exception:
+            pass
+    if cleaned:
+        reporter.ok(CAT, artifact, f"Stripped {cleaned} line(s) from SetupAPI logs")
+    else:
+        reporter.skip(CAT, artifact, "No SetupAPI references to target found")
+
+
 class OsLogsCleaner(BaseCleaner):
     CATEGORY = CAT
 
@@ -483,7 +733,10 @@ class OsLogsCleaner(BaseCleaner):
             skips = (["Pre-flight: disable file audit policy", "Prefetch", "Amcache.hve / PCA",
                       "SRUM database", "AppCompatFlags registry", "BAM/DAM registry",
                       "ShimCache (AppCompatCache)", "WER crash reports", "MSI install logs",
-                      "SDB shim files"] +
+                      "SDB shim files", "Registry hive transaction logs",
+                      "RegBack (registry hive backups)", "PCA execution database (Install.db)",
+                      "PowerShell ScriptBlock logging", "Task Scheduler log & task files",
+                      "SetupAPI logs"] +
                      [f"Event Log: {l}" for l in list(_ALWAYS_CLEAR) + _CHECKED_LOGS])
             for name in skips:
                 reporter.skip(CAT, name, "Windows only")
@@ -499,3 +752,9 @@ class OsLogsCleaner(BaseCleaner):
         _wer(paths, reporter)
         _msi_logs(paths, reporter)
         _sdb_shims(paths, reporter)
+        _reg_transaction_logs(reporter)
+        _reg_backup(reporter)
+        _pca_database(paths, reporter)
+        _ps_scriptblock_log(paths, reporter)
+        _task_scheduler_log(paths, reporter)
+        _setup_api_logs(paths, reporter)

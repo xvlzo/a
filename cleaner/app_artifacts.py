@@ -423,6 +423,153 @@ def _text_log_artifacts(paths: list, reporter: StatusReporter) -> None:
         reporter.skip(CAT, artifact, "No path references found in system text logs")
 
 
+def _defender_quarantine(paths: list, reporter: StatusReporter) -> None:
+    """
+    Defender quarantine stores encrypted file copies AND metadata with original paths.
+    MpCmdRun.log records every file path Defender scanned. Both reveal target paths.
+    """
+    artifact = "Windows Defender quarantine & MpCmdRun.log"
+    reporter.running(CAT, artifact)
+    quarantine_dir = r"C:\ProgramData\Microsoft\Windows Defender\Quarantine"
+    basenames_lower = {os.path.basename(p).lower() for p in paths}
+    path_set_lower = {p.lower() for p in paths}
+    deleted = 0
+    if os.path.isdir(quarantine_dir):
+        for root, dirs, files in os.walk(quarantine_dir):
+            for fname in files:
+                fpath = os.path.join(root, fname)
+                try:
+                    with open(fpath, "rb") as f:
+                        content = f.read()
+                    cl = content.lower()
+                    if (any(b.encode() in cl or b.encode("utf-16-le") in cl for b in basenames_lower) or
+                            any(p.encode() in cl or p.encode("utf-16-le") in cl for p in path_set_lower)):
+                        os.remove(fpath)
+                        deleted += 1
+                except Exception:
+                    pass
+    mp_stripped = 0
+    for mp_log in [os.path.expandvars(r"%TEMP%\MpCmdRun.log"), r"C:\Windows\Temp\MpCmdRun.log"]:
+        if os.path.isfile(mp_log):
+            try:
+                with open(mp_log, "r", encoding="utf-8", errors="ignore") as f:
+                    lines = f.readlines()
+                before = len(lines)
+                filtered = [l for l in lines if not (
+                    any(b in l.lower() for b in basenames_lower) or
+                    any(p in l.lower() for p in path_set_lower)
+                )]
+                if len(filtered) < before:
+                    with open(mp_log, "w", encoding="utf-8") as f:
+                        f.writelines(filtered)
+                    mp_stripped += before - len(filtered)
+            except Exception:
+                pass
+    parts = []
+    if deleted:
+        parts.append(f"{deleted} quarantine entry(s) removed")
+    if mp_stripped:
+        parts.append(f"{mp_stripped} MpCmdRun.log line(s) stripped")
+    if parts:
+        reporter.ok(CAT, artifact, "; ".join(parts))
+    else:
+        reporter.skip(CAT, artifact, "No Defender quarantine/scan references to target found")
+
+
+def _office_telemetry(paths: list, reporter: StatusReporter) -> None:
+    """
+    Office telemetry logs (2013+) record recently opened files with full paths.
+    Office Recent folder holds separate LNK/URL entries from Windows shell Recent.
+    """
+    artifact = "Office telemetry & Recent files"
+    reporter.running(CAT, artifact)
+    basenames_lower = {os.path.basename(p).lower() for p in paths}
+    path_set_lower = {p.lower() for p in paths}
+    targets_utf16 = [p.encode("utf-16-le") for p in paths]
+    basenames_utf16 = [os.path.basename(p).encode("utf-16-le") for p in paths]
+    cleaned = 0
+    deleted = 0
+    for version in ["14.0", "15.0", "16.0"]:
+        for pattern in [
+            os.path.expandvars(rf"%LOCALAPPDATA%\Microsoft\Office\{version}\Telemetry\*.log"),
+            os.path.expandvars(rf"%LOCALAPPDATA%\Microsoft\Office\{version}\Telemetry\*.csv"),
+        ]:
+            for fpath in glob.glob(pattern):
+                try:
+                    with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                        lines = f.readlines()
+                    before = len(lines)
+                    filtered = [l for l in lines if not (
+                        any(b in l.lower() for b in basenames_lower) or
+                        any(p in l.lower() for p in path_set_lower)
+                    )]
+                    if len(filtered) < before:
+                        with open(fpath, "w", encoding="utf-8") as f:
+                            f.writelines(filtered)
+                        cleaned += before - len(filtered)
+                except Exception:
+                    pass
+    office_recent = os.path.expandvars(r"%APPDATA%\Microsoft\Office\Recent")
+    if os.path.isdir(office_recent):
+        for fname in os.listdir(office_recent):
+            fpath = os.path.join(office_recent, fname)
+            try:
+                with open(fpath, "rb") as f:
+                    data = f.read()
+                if any(t in data for t in targets_utf16) or any(b in data for b in basenames_utf16):
+                    os.remove(fpath)
+                    deleted += 1
+            except Exception:
+                pass
+    parts = []
+    if cleaned:
+        parts.append(f"stripped {cleaned} telemetry line(s)")
+    if deleted:
+        parts.append(f"deleted {deleted} Office Recent entry(s)")
+    if parts:
+        reporter.ok(CAT, artifact, "; ".join(parts))
+    else:
+        reporter.skip(CAT, artifact, "No Office telemetry/Recent references found")
+
+
+def _onedrive_logs(paths: list, reporter: StatusReporter) -> None:
+    """
+    OneDrive sync logs record every file sync operation with full paths.
+    If the target was in a synced folder, these logs contain path references.
+    """
+    artifact = "OneDrive sync logs"
+    reporter.running(CAT, artifact)
+    basenames_lower = {os.path.basename(p).lower() for p in paths}
+    path_set_lower = {p.lower() for p in paths}
+    od_dirs = [
+        os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\OneDrive\logs"),
+        os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\OneDrive\setup\logs"),
+    ]
+    cleaned = 0
+    for d in od_dirs:
+        if not os.path.isdir(d):
+            continue
+        for fpath in glob.glob(os.path.join(d, "**", "*.log"), recursive=True):
+            try:
+                with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                    lines = f.readlines()
+                before = len(lines)
+                filtered = [l for l in lines if not (
+                    any(b in l.lower() for b in basenames_lower) or
+                    any(p in l.lower() for p in path_set_lower)
+                )]
+                if len(filtered) < before:
+                    with open(fpath, "w", encoding="utf-8") as f:
+                        f.writelines(filtered)
+                    cleaned += before - len(filtered)
+            except Exception:
+                pass
+    if cleaned:
+        reporter.ok(CAT, artifact, f"Stripped {cleaned} line(s) from OneDrive logs")
+    else:
+        reporter.skip(CAT, artifact, "No OneDrive log references to target found")
+
+
 def _dangling_registry_refs(paths: list, reporter: StatusReporter) -> None:
     """
     Verify no registry artifacts point to our (now-deleted) files.
@@ -489,7 +636,10 @@ class AppArtifactsCleaner(BaseCleaner):
                          "Windows Defender scan history", "Reliability Monitor history",
                          "SmartScreen telemetry", "Clipboard history", "GPU driver telemetry",
                          "Temp extraction artifacts", "ETW kernel diagnostic logs (WDI/PerfLogs)",
-                         "Dropped strings in system text logs", "Dangling registry reference check"]:
+                         "Dropped strings in system text logs",
+                         "Windows Defender quarantine & MpCmdRun.log",
+                         "Office telemetry & Recent files", "OneDrive sync logs",
+                         "Dangling registry reference check"]:
                 reporter.skip(CAT, name, "Windows only")
             return
         _office_mru(paths, reporter)
@@ -504,4 +654,7 @@ class AppArtifactsCleaner(BaseCleaner):
         _temp_artifacts(paths, reporter)
         _etw_logs(reporter)
         _text_log_artifacts(paths, reporter)
+        _defender_quarantine(paths, reporter)
+        _office_telemetry(paths, reporter)
+        _onedrive_logs(paths, reporter)
         _dangling_registry_refs(paths, reporter)  # always last — verification pass

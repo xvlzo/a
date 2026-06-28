@@ -98,16 +98,36 @@ def _smb_audit(reporter: StatusReporter) -> None:
         reporter.ok(CAT, artifact, "Detailed file share and file system auditing disabled")
 
 
+def _arp_cache(reporter: StatusReporter) -> None:
+    """
+    ARP cache records recent LAN connections. Flushing it removes network activity
+    evidence that could correlate with file transfer / exfiltration timelines.
+    """
+    artifact = "ARP cache"
+    reporter.running(CAT, artifact)
+    rc, _, _ = _run(["arp", "-d", "*"])
+    if rc == 0:
+        reporter.ok(CAT, artifact, "ARP cache flushed")
+    else:
+        rc2, _, _ = _run(["powershell", "-NoProfile", "-Command",
+                           "Remove-NetNeighbor -Confirm:$false 2>$null"])
+        if rc2 == 0:
+            reporter.ok(CAT, artifact, "ARP cache flushed via PowerShell")
+        else:
+            reporter.warn(CAT, artifact, "ARP flush may require elevation")
+
+
 class NetworkArtifactsCleaner(BaseCleaner):
     CATEGORY = CAT
 
     def run(self, paths: list, reporter: StatusReporter) -> None:
         if platform.system() != "Windows":
             for name in ["DNS cache", "Windows Firewall logs", "Network connection registry",
-                         "SMB/File share audit policy"]:
+                         "ARP cache", "SMB/File share audit policy"]:
                 reporter.skip(CAT, name, "Windows only")
             return
         _dns_cache(reporter)
         _firewall_logs(reporter)
         _network_registry(reporter)
+        _arp_cache(reporter)
         _smb_audit(reporter)

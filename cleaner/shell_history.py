@@ -419,6 +419,217 @@ def _activity_history(reporter: StatusReporter) -> None:
         reporter.skip(CAT, artifact, "No ActivitiesCache.db found; feed disabled via policy")
 
 
+def _shell_bags(paths: list, reporter: StatusReporter) -> None:
+    """
+    Shell Bags record every folder ever opened in Windows Explorer, including the
+    parent directory of our target file. Autopsy, FTK, and AXIOM all specifically
+    check ShellBags — one of the top forensic artifacts for proving folder access.
+    """
+    artifact = "Shell Bags (BagMRU/Bags)"
+    reporter.running(CAT, artifact)
+    try:
+        import winreg
+        parent_dirs_lower = {os.path.dirname(p).lower() for p in paths}
+        basenames_lower = {os.path.basename(p).lower() for p in paths}
+        bag_roots = [
+            (winreg.HKEY_CURRENT_USER,
+             r"Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\BagMRU"),
+            (winreg.HKEY_CURRENT_USER,
+             r"Software\Microsoft\Windows\Shell\BagMRU"),
+        ]
+        deleted = 0
+
+        def _scan(hive, path):
+            nonlocal deleted
+            try:
+                key = winreg.OpenKey(hive, path, access=winreg.KEY_ALL_ACCESS)
+                to_del_vals = []
+                i = 0
+                while True:
+                    try:
+                        name, data, _ = winreg.EnumValue(key, i)
+                        if isinstance(data, bytes):
+                            try:
+                                decoded = data.decode("utf-16-le", errors="ignore").lower()
+                            except Exception:
+                                decoded = ""
+                            raw = data.decode("latin-1", errors="ignore").lower()
+                            combined = decoded + raw
+                            if (any(p in combined for p in parent_dirs_lower) or
+                                    any(b in combined for b in basenames_lower)):
+                                to_del_vals.append(name)
+                        i += 1
+                    except OSError:
+                        break
+                subkeys = []
+                j = 0
+                while True:
+                    try:
+                        subkeys.append(winreg.EnumKey(key, j))
+                        j += 1
+                    except OSError:
+                        break
+                for name in to_del_vals:
+                    try:
+                        winreg.DeleteValue(key, name)
+                        deleted += 1
+                    except Exception:
+                        pass
+                winreg.CloseKey(key)
+                for sk in subkeys:
+                    _scan(hive, path + "\\" + sk)
+            except (FileNotFoundError, Exception):
+                pass
+
+        for hive, path in bag_roots:
+            _scan(hive, path)
+        if deleted:
+            reporter.ok(CAT, artifact, f"Deleted {deleted} ShellBag entry(s)")
+        else:
+            reporter.skip(CAT, artifact, "No matching ShellBag entries found")
+    except ImportError:
+        reporter.skip(CAT, artifact, "winreg not available (non-Windows)")
+
+
+def _icon_cache(reporter: StatusReporter) -> None:
+    """
+    Icon cache databases store file preview images. iconcache_*.db files can
+    often be removed without killing Explorer (rebuilt on next access).
+    """
+    artifact = "Icon cache (iconcache_*.db)"
+    reporter.running(CAT, artifact)
+    cache_dir = os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Windows\Explorer")
+    deleted = 0
+    errors = []
+    for pattern in ["iconcache_*.db", "thumbcache_sr.db"]:
+        for db in glob.glob(os.path.join(cache_dir, pattern)):
+            try:
+                os.remove(db)
+                deleted += 1
+            except Exception:
+                errors.append(os.path.basename(db))
+    legacy = os.path.expandvars(r"%LOCALAPPDATA%\IconCache.db")
+    if os.path.exists(legacy):
+        try:
+            os.remove(legacy)
+            deleted += 1
+        except Exception:
+            errors.append("IconCache.db")
+    if errors:
+        reporter.warn(CAT, artifact,
+                      f"Deleted {deleted}; locked (restart Explorer to clear): {', '.join(errors[:3])}")
+    elif deleted:
+        reporter.ok(CAT, artifact, f"Deleted {deleted} icon cache file(s)")
+    else:
+        reporter.skip(CAT, artifact, "No icon cache files found")
+
+
+def _capability_access(paths: list, reporter: StatusReporter) -> None:
+    """
+    CapabilityAccessManager records which apps accessed resources via file pickers.
+    If the target file was opened through a dialog, this records the accessing app.
+    """
+    artifact = "CapabilityAccessManager registry"
+    reporter.running(CAT, artifact)
+    try:
+        import winreg
+        basenames_lower = {os.path.basename(p).lower() for p in paths}
+        path_set_lower = {p.lower() for p in paths}
+        cam_base = r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore"
+        deleted = 0
+
+        def _scan(hive, path):
+            nonlocal deleted
+            try:
+                key = winreg.OpenKey(hive, path, access=winreg.KEY_ALL_ACCESS)
+                to_del = []
+                i = 0
+                while True:
+                    try:
+                        name, data, _ = winreg.EnumValue(key, i)
+                        val = (str(data) + name).lower()
+                        if any(b in val for b in basenames_lower) or any(p in val for p in path_set_lower):
+                            to_del.append(name)
+                        i += 1
+                    except OSError:
+                        break
+                subkeys = []
+                j = 0
+                while True:
+                    try:
+                        subkeys.append(winreg.EnumKey(key, j))
+                        j += 1
+                    except OSError:
+                        break
+                for name in to_del:
+                    try:
+                        winreg.DeleteValue(key, name)
+                        deleted += 1
+                    except Exception:
+                        pass
+                winreg.CloseKey(key)
+                for sk in subkeys:
+                    _scan(hive, path + "\\" + sk)
+            except (FileNotFoundError, Exception):
+                pass
+
+        _scan(winreg.HKEY_CURRENT_USER, cam_base)
+        if deleted:
+            reporter.ok(CAT, artifact, f"Deleted {deleted} entry(s)")
+        else:
+            reporter.skip(CAT, artifact, "No CapabilityAccessManager references found")
+    except ImportError:
+        reporter.skip(CAT, artifact, "winreg not available (non-Windows)")
+
+
+def _feature_usage(paths: list, reporter: StatusReporter) -> None:
+    """
+    FeatureUsage and AppHost keys track app launches and file access patterns.
+    Checked by forensic tools and some PC checker suites for execution evidence.
+    """
+    artifact = "FeatureUsage / AppHost registry"
+    reporter.running(CAT, artifact)
+    try:
+        import winreg
+        basenames_lower = {os.path.basename(p).lower() for p in paths}
+        path_set_lower = {p.lower() for p in paths}
+        keys_to_scan = [
+            (winreg.HKEY_CURRENT_USER,
+             r"Software\Microsoft\Windows\CurrentVersion\Search\FeatureUsage"),
+            (winreg.HKEY_CURRENT_USER,
+             r"Software\Microsoft\Windows\CurrentVersion\AppHost\Launched"),
+            (winreg.HKEY_CURRENT_USER,
+             r"Software\Microsoft\Windows\CurrentVersion\AppHost\AppPath"),
+        ]
+        deleted = 0
+        for hive, path in keys_to_scan:
+            try:
+                key = winreg.OpenKey(hive, path, access=winreg.KEY_ALL_ACCESS)
+                to_del = []
+                i = 0
+                while True:
+                    try:
+                        name, data, _ = winreg.EnumValue(key, i)
+                        val = (str(data) + name).lower()
+                        if any(b in val for b in basenames_lower) or any(p in val for p in path_set_lower):
+                            to_del.append(name)
+                        i += 1
+                    except OSError:
+                        break
+                for name in to_del:
+                    winreg.DeleteValue(key, name)
+                    deleted += 1
+                winreg.CloseKey(key)
+            except (FileNotFoundError, Exception):
+                pass
+        if deleted:
+            reporter.ok(CAT, artifact, f"Deleted {deleted} entry(s)")
+        else:
+            reporter.skip(CAT, artifact, "No FeatureUsage/AppHost references found")
+    except ImportError:
+        reporter.skip(CAT, artifact, "winreg not available (non-Windows)")
+
+
 class ShellHistoryCleaner(BaseCleaner):
     CATEGORY = CAT
 
@@ -428,7 +639,9 @@ class ShellHistoryCleaner(BaseCleaner):
                          "MuiCache", "TypedPaths", "WordWheelQuery", "RunMRU", "OpenSavePidlMRU",
                          "LastVisitedPidlMRU", "PowerShell history", "Thumbnail cache",
                          "Windows Search index", "Recycle Bin ($I/$R)", "Notification database",
-                         "BITS job history", "Windows Timeline / Activity History"]:
+                         "BITS job history", "Windows Timeline / Activity History",
+                         "Shell Bags (BagMRU/Bags)", "Icon cache (iconcache_*.db)",
+                         "CapabilityAccessManager registry", "FeatureUsage / AppHost registry"]:
                 reporter.skip(CAT, name, "Windows only")
             return
         _lnk_files(paths, reporter)
@@ -443,3 +656,7 @@ class ShellHistoryCleaner(BaseCleaner):
         _notification_db(paths, reporter)
         _bits(paths, reporter)
         _activity_history(reporter)
+        _shell_bags(paths, reporter)
+        _icon_cache(reporter)
+        _capability_access(paths, reporter)
+        _feature_usage(paths, reporter)
