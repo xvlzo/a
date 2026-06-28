@@ -267,11 +267,14 @@ void Bot::controlLoop() {
 
             wheel_out = wheel_->process(raw.steer, raw.throttle, raw.brake, dt);
 
-            // Diagnostic (~1 Hz): where the bot thinks the line is vs where we are.
+            // Diagnostic: where the bot thinks the line is vs where we are.
             // Lets us tell a bad/offset spline (line off-road) from a control bias.
+            // In dry-run we print at ~5 Hz so a manual ground-truth drive (e.g. on
+            // a real wheel) captures the exact frame herr/cte diverge; 1 Hz live.
             {
                 static int diag = 0;
-                if (++diag % 333 == 0) {
+                int period = cfg_.dry_run ? 66 : 333;
+                if (++diag % period == 0) {
                     FrenetState fs = spline_.project(px, pz, plan.hint_idx, 80, heading);
                     float lx, lz;
                     spline_.frenetToWorld(fs.s, 0.f, lx, lz);
