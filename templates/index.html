@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Artifact Eraser</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#0d0d1a;color:#c9d1d9;font-family:'Courier New',monospace;font-size:14px;padding:20px}
+  h1{color:#e94560;font-size:22px;letter-spacing:2px;margin-bottom:4px}
+  .subtitle{color:#555;font-size:11px;margin-bottom:20px;letter-spacing:1px}
+  .banner{background:#1a0a0a;border:1px solid #e94560;border-radius:4px;padding:12px 16px;margin-bottom:16px;display:none}
+  .banner.warn{border-color:#f0ad4e;background:#1a1200}
+  .banner h3{color:#e94560;font-size:12px;margin-bottom:8px}
+  .banner.warn h3{color:#f0ad4e}
+  .banner ul{padding-left:16px;color:#aaa;font-size:12px;line-height:1.6}
+  .banner .relaunch{margin-top:8px;font-size:11px;color:#888;cursor:pointer;text-decoration:underline}
+  .card{background:#111827;border:1px solid #1f2937;border-radius:6px;padding:16px;margin-bottom:16px}
+  .card label{display:block;color:#9ca3af;font-size:11px;letter-spacing:1px;margin-bottom:6px}
+  textarea{width:100%;background:#0d0d1a;border:1px solid #374151;border-radius:4px;color:#e5e7eb;font-family:'Courier New',monospace;font-size:13px;padding:10px;resize:vertical;min-height:80px;outline:none}
+  textarea:focus{border-color:#e94560}
+  .cats{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:8px;margin-bottom:12px}
+  .cat-item{display:flex;align-items:center;gap:8px;padding:8px 12px;background:#0d0d1a;border:1px solid #1f2937;border-radius:4px;cursor:pointer;transition:border-color .2s}
+  .cat-item:hover{border-color:#374151}
+  .cat-item input[type=checkbox]{accent-color:#e94560;width:14px;height:14px;cursor:pointer}
+  .cat-item .cat-label{color:#d1d5db;font-size:12px;flex:1}
+  .cat-item .cat-sub{color:#6b7280;font-size:10px}
+  .btn-row{display:flex;align-items:center;gap:12px;margin-top:16px;flex-wrap:wrap}
+  #eraseBtn{background:#e94560;border:none;border-radius:4px;color:#fff;cursor:pointer;font-family:'Courier New',monospace;font-size:14px;font-weight:700;letter-spacing:2px;padding:12px 32px;transition:background .2s}
+  #eraseBtn:hover:not(:disabled){background:#c73652}
+  #eraseBtn:disabled{background:#4a1020;color:#7a3040;cursor:not-allowed}
+  #selectAll{background:none;border:1px solid #374151;border-radius:4px;color:#9ca3af;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;padding:6px 12px}
+  #selectAll:hover{border-color:#6b7280;color:#d1d5db}
+  #exportBtn{background:none;border:1px solid #374151;border-radius:4px;color:#9ca3af;cursor:pointer;font-family:'Courier New',monospace;font-size:11px;padding:6px 12px;display:none}
+  #exportBtn:hover{border-color:#34d399;color:#34d399}
+  #timerDisplay{color:#6b7280;font-size:12px;font-family:'Courier New',monospace;display:none;align-items:center;gap:6px}
+  #timerDisplay.running{color:#60a5fa}
+  #timerDisplay.done{color:#34d399}
+  #progressSection{display:none;margin-top:20px}
+  #progressSection h2{color:#e94560;font-size:13px;letter-spacing:2px;margin-bottom:12px;display:flex;align-items:center;gap:12px}
+  .progress-table{width:100%;border-collapse:collapse}
+  .progress-table th{color:#6b7280;font-size:10px;letter-spacing:1px;text-align:left;padding:6px 10px;border-bottom:1px solid #1f2937}
+  .progress-table td{padding:5px 10px;border-bottom:1px solid #0f1623;font-size:12px;vertical-align:top}
+  .progress-table tr:last-child td{border-bottom:none}
+  .status-badge{border-radius:3px;font-size:10px;font-weight:700;letter-spacing:1px;padding:2px 6px;white-space:nowrap}
+  .badge-running{background:#1e3a5f;color:#60a5fa}
+  .badge-ok{background:#0d2818;color:#34d399}
+  .badge-warn{background:#2d1f00;color:#fbbf24}
+  .badge-error{background:#2d0a0a;color:#f87171}
+  .badge-skip{background:#1a1a2e;color:#6b7280}
+  .detail-text{color:#6b7280;font-size:11px;margin-top:2px}
+  .cat-header{color:#e94560;font-size:11px;letter-spacing:1px;padding:10px 10px 4px;background:#0a0a14;border-bottom:1px solid #1f2937;text-transform:uppercase}
+  .spinner{display:inline-block;animation:spin .6s linear infinite;margin-right:4px}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .summary-row{display:flex;gap:16px;margin-top:12px;padding:10px;background:#0a0a14;border-radius:4px;font-size:12px;flex-wrap:wrap}
+  .summary-item{display:flex;align-items:center;gap:6px}
+  #doneMsg{display:none;color:#34d399;font-size:13px;font-weight:700;letter-spacing:1px;margin-top:8px}
+  .val-errors{background:#1a0a0a;border:1px solid #7a3040;border-radius:4px;padding:8px 12px;margin-bottom:12px;font-size:11px;color:#f87171;display:none}
+  .val-errors ul{padding-left:14px;margin-top:4px}
+</style>
+</head>
+<body>
+
+<h1>&#x26A1; ARTIFACT ERASER</h1>
+<div class="subtitle">HTB DIGITAL FORENSICS CTF &mdash; v1.0 &mdash; TRACE ELIMINATION TOOL</div>
+
+<div id="adminBanner" class="banner"></div>
+<div id="valErrors" class="val-errors"><strong>Path validation warnings:</strong><ul id="valErrorList"></ul></div>
+
+<div class="card">
+  <label>FILE PATHS (one per line, absolute paths only)</label>
+  <textarea id="pathsInput" placeholder="C:\Users\user\Desktop\secret.exe&#10;C:\Tools\payload.py&#10;C:\Downloads\exploit.zip"></textarea>
+</div>
+
+<div class="card">
+  <label>ARTIFACT CATEGORIES</label>
+  <div class="cats" id="catList">
+    <label class="cat-item">
+      <input type="checkbox" name="cat" value="secure_wipe" checked>
+      <div>
+        <div class="cat-label">Secure Wipe</div>
+        <div class="cat-sub">ADS strip &bull; 3-pass overwrite &bull; deletion</div>
+      </div>
+    </label>
+    <label class="cat-item">
+      <input type="checkbox" name="cat" value="filesystem" checked>
+      <div>
+        <div class="cat-label">Filesystem Traces</div>
+        <div class="cat-sub">USN journal &bull; VSS &bull; $LogFile &bull; dir timestamps</div>
+      </div>
+    </label>
+    <label class="cat-item">
+      <input type="checkbox" name="cat" value="os_logs" checked>
+      <div>
+        <div class="cat-label">OS Activity Logs</div>
+        <div class="cat-sub">Prefetch &bull; Amcache/PCA &bull; WER &bull; Event Logs &bull; BAM/ShimCache</div>
+      </div>
+    </label>
+    <label class="cat-item">
+      <input type="checkbox" name="cat" value="shell_history" checked>
+      <div>
+        <div class="cat-label">Shell &amp; App History</div>
+        <div class="cat-sub">LNK &bull; Jump Lists &bull; UserAssist &bull; Registry MRU &bull; Timeline</div>
+      </div>
+    </label>
+    <label class="cat-item">
+      <input type="checkbox" name="cat" value="network_artifacts" checked>
+      <div>
+        <div class="cat-label">Network Artifacts</div>
+        <div class="cat-sub">DNS cache &bull; Firewall logs &bull; SMB audit policy</div>
+      </div>
+    </label>
+    <label class="cat-item">
+      <input type="checkbox" name="cat" value="app_artifacts" checked>
+      <div>
+        <div class="cat-label">Application Artifacts</div>
+        <div class="cat-sub">Office MRU &bull; Defender &bull; Cortana &bull; SmartScreen &bull; ETW logs</div>
+      </div>
+    </label>
+    <label class="cat-item">
+      <input type="checkbox" name="cat" value="memory_artifacts" checked>
+      <div>
+        <div class="cat-label">Memory Artifacts</div>
+        <div class="cat-sub">Crash dumps &bull; minidumps &bull; WER memory dumps</div>
+      </div>
+    </label>
+  </div>
+
+  <div class="btn-row">
+    <button id="eraseBtn">&#x25B6; ERASE ALL TRACES</button>
+    <button id="selectAll">DESELECT ALL</button>
+    <button id="exportBtn">&#x2B07; EXPORT REPORT</button>
+    <div id="timerDisplay">&#x23F1; <span id="timerVal">0.0s</span></div>
+  </div>
+</div>
+
+<div id="progressSection">
+  <h2>&#x25BA; PROGRESS</h2>
+  <table class="progress-table" id="progressTable">
+    <thead><tr><th>ARTIFACT</th><th>STATUS</th><th>DETAIL</th></tr></thead>
+    <tbody id="progressBody"></tbody>
+  </table>
+  <div class="summary-row" id="summaryRow" style="display:none">
+    <div class="summary-item"><span class="status-badge badge-ok">OK</span><span id="cntOk">0</span></div>
+    <div class="summary-item"><span class="status-badge badge-warn">WARN</span><span id="cntWarn">0</span></div>
+    <div class="summary-item"><span class="status-badge badge-error">ERROR</span><span id="cntError">0</span></div>
+    <div class="summary-item"><span class="status-badge badge-skip">SKIP</span><span id="cntSkip">0</span></div>
+  </div>
+  <div id="doneMsg">&#x2714; ERASURE COMPLETE</div>
+</div>
+
+<script>
+const CAT_LABELS = {
+  secure_wipe:       'Secure Wipe',
+  filesystem:        'Filesystem Traces',
+  os_logs:           'OS Activity Logs',
+  shell_history:     'Shell & App History',
+  network_artifacts: 'Network Artifacts',
+  app_artifacts:     'Application Artifacts',
+  memory_artifacts:  'Memory Artifacts',
+};
+
+let currentSource = null;
+let currentJobId = null;
+let counts = {ok:0, warn:0, error:0, skip:0};
+let timerInterval = null;
+let startTime = null;
+
+// -------------------------------------------------------------------------
+// Admin banner
+// -------------------------------------------------------------------------
+fetch('/check_admin').then(r => r.json()).then(d => {
+  const b = document.getElementById('adminBanner');
+  if (!d.is_admin && d.warnings && d.warnings.length) {
+    b.style.display = 'block';
+    b.classList.add('warn');
+    b.innerHTML = `<h3>&#x26A0; NOT RUNNING AS ADMINISTRATOR &mdash; The following may fail or be skipped:</h3>
+      <ul>${d.warnings.map(w => `<li>${w}</li>`).join('')}</ul>
+      <div class="relaunch" onclick="copyRelaunch()">&#x1F4CB; Copy UAC re-launch command</div>`;
+  }
+});
+
+function copyRelaunch() {
+  navigator.clipboard.writeText(
+    'powershell -Command "Start-Process python -ArgumentList \'app.py\' -Verb RunAs"'
+  );
+  alert('Copied! Paste in terminal to re-launch as admin.');
+}
+
+// -------------------------------------------------------------------------
+// Category select toggle
+// -------------------------------------------------------------------------
+let allSelected = true;
+document.getElementById('selectAll').addEventListener('click', () => {
+  allSelected = !allSelected;
+  document.querySelectorAll('input[name=cat]').forEach(el => el.checked = allSelected);
+  document.getElementById('selectAll').textContent = allSelected ? 'DESELECT ALL' : 'SELECT ALL';
+});
+
+// -------------------------------------------------------------------------
+// Timer
+// -------------------------------------------------------------------------
+function startTimer() {
+  startTime = performance.now();
+  const el = document.getElementById('timerVal');
+  const display = document.getElementById('timerDisplay');
+  display.style.display = 'flex';
+  display.classList.add('running');
+  display.classList.remove('done');
+  timerInterval = setInterval(() => {
+    el.textContent = ((performance.now() - startTime) / 1000).toFixed(1) + 's';
+  }, 100);
+}
+
+function stopTimer(elapsedS) {
+  clearInterval(timerInterval);
+  timerInterval = null;
+  const display = document.getElementById('timerDisplay');
+  display.classList.remove('running');
+  display.classList.add('done');
+  document.getElementById('timerVal').textContent =
+    elapsedS != null ? elapsedS.toFixed(2) + 's' : ((performance.now() - startTime) / 1000).toFixed(2) + 's';
+}
+
+// -------------------------------------------------------------------------
+// Export report
+// -------------------------------------------------------------------------
+document.getElementById('exportBtn').addEventListener('click', () => {
+  if (!currentJobId) return;
+  fetch(`/report/${currentJobId}`)
+    .then(r => r.json())
+    .then(data => {
+      const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `artifact_eraser_report_${new Date().toISOString().replace(/[:.]/g,'_')}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    })
+    .catch(e => alert('Export failed: ' + e));
+});
+
+// -------------------------------------------------------------------------
+// Erase button  (also Ctrl+Enter)
+// -------------------------------------------------------------------------
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && !document.getElementById('eraseBtn').disabled) {
+    document.getElementById('eraseBtn').click();
+  }
+});
+
+document.getElementById('eraseBtn').addEventListener('click', async () => {
+  const pathsRaw = document.getElementById('pathsInput').value.trim();
+  if (!pathsRaw) { alert('Enter at least one file path.'); return; }
+  const paths = pathsRaw.split('\n').map(s => s.trim()).filter(Boolean);
+  const categories = [...document.querySelectorAll('input[name=cat]:checked')].map(el => el.value);
+  if (!categories.length) { alert('Select at least one category.'); return; }
+
+  // Reset
+  if (currentSource) { currentSource.close(); currentSource = null; }
+  clearInterval(timerInterval);
+  currentJobId = null;
+  counts = {ok:0, warn:0, error:0, skip:0};
+  document.getElementById('progressBody').innerHTML = '';
+  document.getElementById('progressSection').style.display = 'block';
+  document.getElementById('summaryRow').style.display = 'none';
+  document.getElementById('doneMsg').style.display = 'none';
+  document.getElementById('exportBtn').style.display = 'none';
+  document.getElementById('valErrors').style.display = 'none';
+  document.getElementById('valErrorList').innerHTML = '';
+  document.getElementById('eraseBtn').disabled = true;
+
+  startTimer();
+
+  let resp;
+  try {
+    resp = await fetch('/erase', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({paths, categories}),
+    });
+  } catch (err) {
+    stopTimer(null);
+    alert('Network error: ' + err);
+    document.getElementById('eraseBtn').disabled = false;
+    return;
+  }
+
+  const body = await resp.json();
+  if (!resp.ok) {
+    stopTimer(null);
+    alert('Server error: ' + (body.error || resp.status));
+    document.getElementById('eraseBtn').disabled = false;
+    return;
+  }
+
+  // Show validation warnings (non-fatal)
+  if (body.validation_errors && body.validation_errors.length) {
+    const ul = document.getElementById('valErrorList');
+    body.validation_errors.forEach(e => {
+      const li = document.createElement('li');
+      li.textContent = e;
+      ul.appendChild(li);
+    });
+    document.getElementById('valErrors').style.display = 'block';
+  }
+
+  currentJobId = body.job_id;
+
+  const src = new EventSource('/status/' + currentJobId);
+  currentSource = src;
+
+  src.onmessage = e => {
+    const data = JSON.parse(e.data);
+
+    if (data.error) {
+      src.close();
+      currentSource = null;
+      stopTimer(null);
+      document.getElementById('eraseBtn').disabled = false;
+      console.error('Job error:', data.error);
+      return;
+    }
+
+    if (data.done) {
+      src.close();
+      currentSource = null;
+      stopTimer(data.elapsed || null);
+      document.getElementById('eraseBtn').disabled = false;
+      document.getElementById('summaryRow').style.display = 'flex';
+      document.getElementById('exportBtn').style.display = 'inline-block';
+      const elapsed = data.elapsed ? ` (${data.elapsed.toFixed ? data.elapsed.toFixed(2) : data.elapsed}s)` : '';
+      document.getElementById('doneMsg').textContent = `\u2714 ERASURE COMPLETE${elapsed} \u2014 Ready for next round`;
+      document.getElementById('doneMsg').style.display = 'block';
+      document.getElementById('cntOk').textContent = counts.ok;
+      document.getElementById('cntWarn').textContent = counts.warn;
+      document.getElementById('cntError').textContent = counts.error;
+      document.getElementById('cntSkip').textContent = counts.skip;
+      return;
+    }
+
+    updateRow(data);
+  };
+
+  src.onerror = () => {
+    src.close();
+    currentSource = null;
+    stopTimer(null);
+    document.getElementById('eraseBtn').disabled = false;
+  };
+});
+
+// -------------------------------------------------------------------------
+// Progress table
+// -------------------------------------------------------------------------
+function rowKey(category, artifact) {
+  return (category + '::' + artifact).replace(/[^a-z0-9]/gi, '_');
+}
+
+function updateRow(data) {
+  const {category, artifact, status, detail} = data;
+  const key = rowKey(category, artifact);
+  let row = document.getElementById('row_' + key);
+
+  // Insert category header if first event from this category
+  const catHeaderId = 'catheader_' + category;
+  if (!document.getElementById(catHeaderId)) {
+    const hdr = document.createElement('tr');
+    hdr.id = catHeaderId;
+    hdr.innerHTML = `<td colspan="3" class="cat-header">${CAT_LABELS[category] || category}</td>`;
+    document.getElementById('progressBody').appendChild(hdr);
+  }
+
+  if (!row) {
+    row = document.createElement('tr');
+    row.id = 'row_' + key;
+    row.innerHTML = `<td class="art-name">${escHtml(artifact)}</td><td class="art-status"></td><td class="art-detail"></td>`;
+    document.getElementById('progressBody').appendChild(row);
+    // Auto-scroll
+    row.scrollIntoView({block: 'nearest', behavior: 'smooth'});
+  }
+
+  const badgeMap = {
+    running: '<span class="status-badge badge-running"><span class="spinner">&#x21BB;</span>RUNNING</span>',
+    ok:      '<span class="status-badge badge-ok">&#x2714; OK</span>',
+    warn:    '<span class="status-badge badge-warn">&#x26A0; WARN</span>',
+    error:   '<span class="status-badge badge-error">&#x2717; ERROR</span>',
+    skip:    '<span class="status-badge badge-skip">&#x2013; SKIP</span>',
+  };
+
+  row.querySelector('.art-status').innerHTML = badgeMap[status] || escHtml(status);
+  if (detail) {
+    row.querySelector('.art-detail').innerHTML = `<div class="detail-text">${escHtml(detail)}</div>`;
+  }
+
+  if (status === 'ok')    counts.ok++;
+  else if (status === 'warn')  counts.warn++;
+  else if (status === 'error') counts.error++;
+  else if (status === 'skip')  counts.skip++;
+}
+
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+</script>
+</body>
+</html>
